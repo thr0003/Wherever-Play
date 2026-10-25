@@ -18,6 +18,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -94,6 +96,25 @@ fun rememberPdfPage(
     }
 
     return bitmap
+}
+
+/**
+ * WP: 谱面渲染的目标宽度 = min(400dp, 屏幕宽度)。
+ *
+ * 为什么不能写死 400dp：高密度机的逻辑宽度可能不到 400dp（本机模拟器
+ * 1440×2560 @ 640dpi → 密度 4 → 屏幕上只有 360dp 宽）。这时按 400dp 渲染等于
+ * 多渲染 23% 的像素、再缩回去显示 —— 纯浪费内存，而内存恰恰是三页并排最紧的地方
+ * （这才是「手机上一直在渲染、平板上没事」的根因之一）。
+ */
+@Composable
+fun rememberPageRenderWidth(): Int {
+    val density = LocalDensity.current
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp.dp
+    return remember(density, screenWidthDp) {
+        val byDp = with(density) { 400.dp.toPx() }
+        val byScreen = with(density) { screenWidthDp.toPx() }
+        minOf(byDp, byScreen).toInt()
+    }
 }
 
 /** 按容器等比居中绘制谱面；bitmap 为空时显示提示（渲染失败不再静默黑屏） */

@@ -145,7 +145,7 @@ fun MarkingScreen(
     val playheadPage = PageResolver.pageAt(marks, playhead)
     val currentPage = selected?.let { marks.getOrNull(it)?.page } ?: playheadPage
     val density = LocalDensity.current
-    val targetWidthPx = with(density) { 400.dp.toPx() }.toInt()
+    val targetWidthPx = rememberPageRenderWidth()
     val bitmap = rememberPdfPage(pdfFile, currentPage - 1, targetWidthPx)
 
     var scale by remember { mutableStateOf(1f) }

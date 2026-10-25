@@ -260,7 +260,7 @@ fun PlaybackScreen(
     val displayPage = (manualPage ?: autoPage).coerceIn(1, project.pageCount.coerceAtLeast(1))
 
     val density = LocalDensity.current
-    val targetWidthPx = with(density) { 400.dp.toPx() }.toInt()
+    val targetWidthPx = rememberPageRenderWidth()
     val barRisePx = with(density) { WpMotion.BAR_RISE_DP.dp.roundToPx() }
 
     // 当前页渲染 + 邻居页预渲染
