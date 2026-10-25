@@ -2,6 +2,7 @@ package com.whereverplay.app.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -168,5 +169,26 @@ fun WpSolidButton(
         ) {
             Text(text, fontSize = fontSize, fontWeight = FontWeight.Medium, color = Color(0xFF17171A))
         }
+    }
+}
+
+/** WP: 玻璃次按钮 —— 详情/编辑页底部的次级动作（导出、删除那类） */
+@Composable
+fun WpGhostButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    height: Dp = 46.dp,
+    fontSize: TextUnit = 12.sp,
+) {
+    Box(
+        modifier
+            .height(height)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Glass.fillStrong)
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, fontSize = fontSize, color = MaterialTheme.colorScheme.onBackground)
     }
 }

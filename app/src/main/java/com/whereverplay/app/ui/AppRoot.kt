@@ -286,7 +286,6 @@ fun AppRoot() {
                                     onBack = { route = null },
                                     onOpenPlay = { route = Route.Play(listOf(it)) },
                                     onOpenEdit = { route = Route.Edit(it.id) },
-                                    onExport = { startExport(ExportRequest.Projects(listOf(it))) },
                                     onUpdate = { updated ->
                                         repo.save(updated)
                                         reload()
@@ -295,10 +294,6 @@ fun AppRoot() {
                                         val ok = tagStore.add(name)
                                         if (ok) tags = tagStore.all()
                                         ok
-                                    },
-                                    onDelete = { target ->
-                                        deleteProject(target)
-                                        route = null
                                     },
                                 )
                             }
@@ -312,11 +307,17 @@ fun AppRoot() {
                                 ProjectEditScreen(
                                     project = p,
                                     installer = installer,
+                                    playlistRefCount = playlists.count { p.id in it.projectIds },
                                     onBack = { route = null },
                                     onOpenMarks = { route = Route.Mark(it.id) },
                                     onUpdate = { updated ->
                                         repo.save(updated)
                                         reload()
+                                    },
+                                    onExport = { startExport(ExportRequest.Projects(listOf(it))) },
+                                    onDelete = { target ->
+                                        deleteProject(target)
+                                        route = null
                                     },
                                 )
                             }

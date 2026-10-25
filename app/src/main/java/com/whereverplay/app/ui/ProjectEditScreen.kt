@@ -41,23 +41,29 @@ import com.whereverplay.app.pdf.PdfPageRenderer
 import java.io.File
 
 /**
- * WP: 编辑项目页 —— 只放「动文件」的动作：换音频、换谱面、重新打点。
+ * WP: 编辑项目页 —— 所有「会改动项目」的动作都收在这里。
  *
- * 独立成页的原因：这三个动作都会让打点失效，属于「要重新花时间做一遍」的重操作，
- * 不能和详情页的「改个名字」放在同一层级，否则误触代价太高。
- * 每个动作都要过一次确认弹窗。
+ * 分两层：
+ *  - **动文件**（换音频 / 换谱面 / 重新打点）：都会让已有打点失效，属于「要重花时间」的重操作；
+ *  - **其它**（导出 .wplay / 删除项目）：不常点，但都关系到这个项目的生死，放在详情页会把
+ *    「看信息」那页变成操作台。用户要求这些按钮从详情页挪过来，详情页现在只有「播放」一个动作。
+ * 动文件这三个动作各过一次确认弹窗。
  */
 @Composable
 fun ProjectEditScreen(
     project: Project,
     installer: MediaInstaller,
+    playlistRefCount: Int,
     onBack: () -> Unit,
     onOpenMarks: (Project) -> Unit,
     onUpdate: (Project) -> Unit,
+    onExport: (Project) -> Unit,
+    onDelete: (Project) -> Unit,
 ) {
     val context = LocalContext.current
     var pendingReplace by remember { mutableStateOf<String?>(null) } // "audio" | "pdf"
     var replaceError by remember { mutableStateOf<String?>(null) }
+    var confirmDelete by remember { mutableStateOf(false) }
 
     val pickAudio = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -186,6 +192,30 @@ fun ProjectEditScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
+            Spacer(Modifier.height(24.dp))
+            Text("其它操作", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(8.dp))
+
+            WpGhostButton(
+                text = "导出 .wplay",
+                onClick = { onExport(project) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Spacer(Modifier.height(10.dp))
+
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0x22FF6B6B))
+                    .clickable { confirmDelete = true }
+                    .padding(vertical = 13.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("删除项目", fontSize = 13.sp, color = Color(0xFFFF8A80))
+            }
+
             Spacer(Modifier.height(30.dp))
         }
     }
@@ -203,6 +233,30 @@ fun ProjectEditScreen(
                 }) { Text("继续更换") }
             },
             dismissButton = { TextButton(onClick = { pendingReplace = null }) { Text("取消") } },
+        )
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除「${project.name}」？") },
+            text = {
+                Text(
+                    buildString {
+                        append("会同时删除已复制的音频、PDF 与封面，无法恢复。")
+                        if (playlistRefCount > 0) {
+                            append("\n\n注意：有 $playlistRefCount 个播放列表引用了它，删除后那些列表里会显示为「不可用」占位。")
+                        }
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    onDelete(project)
+                }) { Text("删除", color = Color(0xFFFF8A80)) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } },
         )
     }
 }

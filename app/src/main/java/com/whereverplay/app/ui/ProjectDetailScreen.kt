@@ -43,13 +43,13 @@ import com.whereverplay.app.domain.TimeFormat
 import java.io.File
 
 /**
- * WP: 项目详情页 —— 只负责「看信息 + 改元信息」。
+ * WP: 项目详情页 —— **只读信息 + 播放**。
  *
- * 按用户的分工拆成两页：
- *  - **详情**（本页）：名称 / 作者 / 标签 / 封面 / 各项统计；
- *  - **编辑**（ProjectEditScreen）：换音频、换谱面、重新打点。
- * 以前一页塞了 6 个按钮（播放/重新打点/换歌/换谱/删除/改封面），层级混乱。
- * 现在主操作只剩「播放」一个实心，编辑入口收在顶栏右侧，删除留在页面最底部。
+ * 按用户的分工：这一页只负责「看」，所有改动都去编辑页。
+ *  - **详情**（本页）：封面 / 名称 / 作者 / 乐器标签 / 各项统计 / 播放；
+ *  - **编辑**（ProjectEditScreen）：换音频、换谱面、重新打点、导出 .wplay、删除项目。
+ * 曾经详情页底部还挂着「更换文件 / 重新打点」「导出」「删除」三个按钮，
+ * 和右上角的「编辑」入口完全重复，还让「看信息」这一页看着像操作台 —— 已全部下放到编辑页。
  */
 @Composable
 fun ProjectDetailScreen(
@@ -62,15 +62,12 @@ fun ProjectDetailScreen(
     onBack: () -> Unit,
     onOpenPlay: (Project) -> Unit,
     onOpenEdit: (Project) -> Unit,
-    onExport: (Project) -> Unit,
     onUpdate: (Project) -> Unit,
     onAddTag: (String) -> Boolean,
-    onDelete: (Project) -> Unit,
 ) {
     val context = LocalContext.current
     var editingInfo by remember { mutableStateOf(false) }
     var pickingTag by remember { mutableStateOf(false) }
-    var confirmDelete by remember { mutableStateOf(false) }
 
     val coverFile = remember(project.coverFile) {
         project.coverFile?.let { File(File(context.filesDir, "media"), it) }
@@ -198,25 +195,13 @@ fun ProjectDetailScreen(
             }
 
             Spacer(Modifier.height(10.dp))
-
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                GhostAction("更换文件 / 重新打点", Modifier.weight(1f)) { onOpenEdit(project) }
-                GhostAction("导出 .wplay", Modifier.weight(1f)) { onExport(project) }
-            }
-
-            Spacer(Modifier.height(10.dp))
-
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0x22FF6B6B))
-                    .clickable { confirmDelete = true }
-                    .padding(vertical = 12.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("删除项目", fontSize = 13.sp, color = Color(0xFFFF8A80))
-            }
+            // 换文件 / 重新打点 / 导出 / 删除 全部在编辑页，详情页只留「播放」
+            Text(
+                "换文件、重新打点、导出、删除都在右上角「编辑」里",
+                fontSize = 10.sp,
+                color = Color(0xFF6E6E78),
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+            )
 
             Spacer(Modifier.height(30.dp))
         }
@@ -272,29 +257,6 @@ fun ProjectDetailScreen(
         )
     }
 
-    if (confirmDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text("删除「${project.name}」？") },
-            text = {
-                Text(
-                    buildString {
-                        append("会同时删除已复制的音频、PDF 与封面，无法恢复。")
-                        if (playlistRefCount > 0) {
-                            append("\n\n注意：有 $playlistRefCount 个播放列表引用了它，删除后那些列表里会显示为「不可用」占位。")
-                        }
-                    }
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmDelete = false
-                    onDelete(project)
-                }) { Text("删除", color = Color(0xFFFF8A80)) }
-            },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("取消") } },
-        )
-    }
 }
 
 /** 一行「标签 + 当前值 + 动作」的可改信息行 */
@@ -353,20 +315,5 @@ private fun InfoRow(label: String, value: String) {
         Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.weight(1f))
         Text(value, fontSize = 12.sp)
-    }
-}
-
-/** 玻璃次按钮（详情页底部的次级动作） */
-@Composable
-private fun GhostAction(text: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Box(
-        modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(Glass.fillStrong)
-            .clickable { onClick() }
-            .padding(vertical = 13.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(text, fontSize = 12.sp, color = MaterialTheme.colorScheme.onBackground)
     }
 }
