@@ -22,7 +22,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -106,11 +105,13 @@ fun CreateProjectScreen(
             Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TextButton(onClick = onCancel) { Text("取消", fontSize = 13.sp) }
+            // WP: 全应用统一用 IconBack 的细 chevron，原来是文字按钮「取消」
+            WpIconButton(onClick = onCancel, visual = 0.dp) { tint -> IconBack(tint, 18.dp) }
             Spacer(Modifier.weight(1f))
             Text("新建项目", fontSize = 15.sp, fontWeight = FontWeight.Medium)
             Spacer(Modifier.weight(1f))
-            Spacer(Modifier.width(56.dp))
+            // 右侧留一个和左边箭头等宽的占位（44 热区），标题才真正居中
+            Spacer(Modifier.width(44.dp))
         }
 
         Column(

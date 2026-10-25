@@ -123,6 +123,31 @@ fun AppRoot() {
         route = if (touched.configured) Route.Play(listOf(touched)) else Route.Mark(touched.id)
     }
 
+    /**
+     * WP: 进入「播放列表播放态」的唯一入口。
+     *
+     * 列表页点整行、编辑页底部「开始播放」都走这里。这段「过滤失效项 → 组队列」原来
+     * 内联在 PlaylistEditScreen.onPlay 里，多了一个入口后不抽出来就会有两份逻辑各自演化。
+     */
+    fun startPlaylist(list: Playlist) {
+        // 只把仍可用的项目放进播放队列，失效项直接跳过
+        val available = list.resolve(projects.associateBy { it.id })
+            .filterIsInstance<PlaylistEntry.Available>()
+            .map { it.project }
+        if (available.isEmpty()) {
+            notify("这个播放列表里没有可用项目")
+            return
+        }
+        // 开播即算「最近打开过」，首页按时间排序才有意义
+        playlistRepo.save(list.copy(lastOpenedAt = System.currentTimeMillis()))
+        playlists = playlistRepo.all()
+        route = Route.Play(
+            queue = available,
+            startIndex = 0,
+            autoAdvanceMs = if (list.advanceMode == Playlist.ADVANCE_AUTO) list.gapMs else null,
+        )
+    }
+
     /** 把内容写进目标 Uri（导出流程最后一步，跑在 IO 线程） */
     fun writeExport(request: ExportRequest, uri: Uri) {
         when (request) {
@@ -262,7 +287,8 @@ fun AppRoot() {
                                 reload()
                                 route = Route.PlaylistEdit(playlist)
                             },
-                            onOpenPlaylist = { route = Route.PlaylistEdit(it) },
+                            onPlayPlaylist = { startPlaylist(it) },
+                            onEditPlaylist = { route = Route.PlaylistEdit(it) },
                             onImportPlaylist = { importPicker.launch(arrayOf("*/*")) },
                             onBatchDeletePlaylists = { list ->
                                 list.forEach { playlistRepo.delete(it.id) }
@@ -295,6 +321,7 @@ fun AppRoot() {
                                         if (ok) tags = tagStore.all()
                                         ok
                                     },
+                                    onNotify = { notify(it) },
                                 )
                             }
                         }
@@ -319,6 +346,7 @@ fun AppRoot() {
                                         deleteProject(target)
                                         route = null
                                     },
+                                    onNotify = { notify(it) },
                                 )
                             }
                         }
@@ -391,21 +419,8 @@ fun AppRoot() {
                                 reload()
                                 route = null
                             },
-                            onPlay = { p ->
-                                // 只把仍可用的项目放进播放队列，失效项直接跳过
-                                val available = p.resolve(projects.associateBy { it.id })
-                                    .filterIsInstance<PlaylistEntry.Available>()
-                                    .map { it.project }
-                                if (available.isEmpty()) {
-                                    notify("这个播放列表里没有可用项目")
-                                } else {
-                                    route = Route.Play(
-                                        queue = available,
-                                        startIndex = 0,
-                                        autoAdvanceMs = if (p.advanceMode == Playlist.ADVANCE_AUTO) p.gapMs else null,
-                                    )
-                                }
-                            },
+                            // WP: 编辑页改完顺序 / 衔接方式后直接试播，和列表页点行共用同一个入口
+                            onPlay = { startPlaylist(it) },
                         )
                     }
                 }

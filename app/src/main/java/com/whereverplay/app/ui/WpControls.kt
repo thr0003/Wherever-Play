@@ -47,6 +47,9 @@ fun WpIconButton(
         onClick = onClick,
         enabled = enabled,
         modifier = modifier.size(44.dp),
+        // 涟漪按「视觉圆」裁，不是按 44dp 热区 —— 否则四个角会露出方框。
+        // 无底纯图标（visual = 0）没有圆底，给图标自身那一档，范围略大于图标但不至于铺满 44。
+        rippleShape = wpRippleCircle(if (visual.value > 0f) visual else 36.dp),
         contentAlignment = Alignment.Center,
     ) {
         if (visual.value <= 0f) {
@@ -72,7 +75,8 @@ fun WpIconButton(
     }
 }
 
-/** WP: 玻璃胶囊文字按钮（首页「＋ 新建」这类带文字的次要动作） */
+/** WP: 玻璃胶囊文字按钮（首页「＋」这类带图标/文字的次要动作）。
+ *  [text] 传空串 = 只有图标（首页右上角那个 `+` 就是这么用的）。 */
 @Composable
 fun WpPillAction(
     text: String,
@@ -84,6 +88,8 @@ fun WpPillAction(
     WpTapArea(
         onClick = onClick,
         modifier = modifier.height(44.dp),
+        // 视觉胶囊 36 高，热区 44 —— 上下各缩 4dp 让涟漪正好压住胶囊
+        rippleShape = wpRippleShape(18.dp, insetY = 4.dp),
         contentAlignment = Alignment.Center,
     ) {
         val shape = RoundedCornerShape(18.dp)
@@ -93,19 +99,22 @@ fun WpPillAction(
                 .clip(shape)
                 .background(Glass.fillStrong)
                 .border(0.5.dp, Glass.border, shape)
-                .padding(horizontal = 14.dp),
+                .padding(horizontal = if (text.isEmpty()) 10.dp else 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             icon?.invoke(tint)
-            Text(text, fontSize = 12.sp, color = tint, fontWeight = FontWeight.Medium)
+            if (text.isNotEmpty()) Text(text, fontSize = 12.sp, color = tint, fontWeight = FontWeight.Medium)
         }
     }
 }
 
 /**
  * WP: 小号玻璃胶囊（筛选 chip / 微调 chip / 模式 chip）。
- * 高度由调用方定（筛选 28、微调 28、模式 32）。
+ * 高度由调用方定（筛选 28、微调 28、模式 32、标签 32）。
+ *
+ * [leadingIcon] 是给乐器标签预留的图标槽：传 null 时布局和以前完全一致，
+ * 以后标签配上具象化图标只需要在 TagPicker 的 `tagIconOf()` 里补 case，这里不用动。
  */
 @Composable
 fun WpChip(
@@ -116,27 +125,33 @@ fun WpChip(
     height: Dp = 28.dp,
     fontSize: TextUnit = 11.sp,
     horizontalPadding: Dp = 14.dp,
+    leadingIcon: (@Composable (Color) -> Unit)? = null,
 ) {
     val shape = RoundedCornerShape(14.dp)
+    val contentColor = if (selected) MaterialTheme.colorScheme.onBackground
+    else MaterialTheme.colorScheme.onSurfaceVariant
     WpTapArea(
         onClick = onClick,
         modifier = modifier.height(height),
+        // 热区与视觉同尺寸，直接按 14dp 圆角裁
+        rippleShape = wpRippleShape(14.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Box(
+        Row(
             Modifier
                 .height(height)
                 .clip(shape)
                 .background(if (selected) Glass.fillStrong else Glass.fill)
                 .border(0.5.dp, if (selected) Glass.borderStrong else Glass.border, shape)
                 .padding(horizontal = horizontalPadding),
-            contentAlignment = Alignment.Center,
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
         ) {
+            leadingIcon?.invoke(contentColor)
             Text(
                 text,
                 fontSize = fontSize,
-                color = if (selected) MaterialTheme.colorScheme.onBackground
-                else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = contentColor,
                 maxLines = 1,
             )
         }
@@ -157,6 +172,7 @@ fun WpSolidButton(
         onClick = onClick,
         enabled = enabled,
         modifier = modifier.height(height),
+        rippleShape = wpRippleShape(14.dp),
         contentAlignment = Alignment.Center,
     ) {
         Box(

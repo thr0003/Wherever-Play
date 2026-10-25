@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -36,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -57,6 +60,7 @@ import com.whereverplay.app.domain.PlaylistEntry
 import com.whereverplay.app.domain.Project
 import com.whereverplay.app.domain.TimeFormat
 import com.whereverplay.app.domain.resolve
+import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.math.roundToInt
 
@@ -64,7 +68,12 @@ import kotlin.math.roundToInt
 
 /**
  * WP: 播放列表首页。
- * 新增：右上角「＋」下拉（新建 / 导入 .wplist）、长按多选（批量导出 / 删除）。
+ * 右上角「＋」下拉（新建 / 导入 .wplist）、长按多选（批量导出 / 删除）。
+ *
+ * 行的交互（2026-10-25 调整）：
+ *  - **点整行 = 直接开始播放这个列表**（从第 1 首起）；
+ *  - 右侧 `⋮` 菜单 = 编辑 / 导出 / 删除 —— 编辑页不再从「点行」进；
+ *  - 长按仍是多选，批量导出 / 删除走顶部操作条。
  */
 @Composable
 fun PlaylistsScreen(
@@ -72,15 +81,19 @@ fun PlaylistsScreen(
     projects: Map<String, Project>,
     onCreate: (String) -> Unit,
     onImport: () -> Unit,
-    onOpen: (Playlist) -> Unit,
+    onPlay: (Playlist) -> Unit,
+    onEdit: (Playlist) -> Unit,
     onExport: (List<Playlist>) -> Unit,
     onBatchDelete: (List<Playlist>) -> Unit,
 ) {
     var creating by remember { mutableStateOf(false) }
     var newName by remember { mutableStateOf("") }
     var plusMenu by remember { mutableStateOf(false) }
+    // 单个删除的确认弹窗（批量删除在顶部操作条里，那条原本就直接删）
+    var pendingDelete by remember { mutableStateOf<Playlist?>(null) }
     val selection = remember { mutableStateListOf<String>() }
     val selecting = selection.isNotEmpty()
+    val listState = rememberLazyListState()
 
     androidx.activity.compose.BackHandler(enabled = selecting) { selection.clear() }
 
@@ -110,8 +123,9 @@ fun PlaylistsScreen(
                 Text("播放列表", fontSize = 26.sp, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.weight(1f))
                 Box {
-                    WpPillAction(text = "新建", onClick = { plusMenu = true }) { tint ->
-                        IconPlus(tint, 13.dp)
+                    // WP: 胶囊里不再写「新建」两个字，只留 +（和项目页一致）
+                    WpPillAction(text = "", onClick = { plusMenu = true }) { tint ->
+                        IconPlus(tint, 15.dp)
                     }
                     DropdownMenu(expanded = plusMenu, onDismissRequest = { plusMenu = false }) {
                         DropdownMenuItem(
@@ -142,29 +156,60 @@ fun PlaylistsScreen(
             return@Column
         }
 
-        LazyColumn(
-            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            items(playlists, key = { it.id }) { p ->
-                val entries = p.resolve(projects)
-                val missing = entries.count { it is PlaylistEntry.Missing }
-                PlaylistRow(
-                    playlist = p,
-                    total = entries.size,
-                    missing = missing,
-                    selecting = selecting,
-                    selected = p.id in selection,
-                    onClick = {
-                        if (selecting) {
-                            if (p.id in selection) selection.remove(p.id) else selection.add(p.id)
-                        } else {
-                            onOpen(p)
-                        }
-                    },
-                    onLongClick = { if (p.id !in selection) selection.add(p.id) },
-                )
+        // Box 包裹：滚动条要压在列表右侧，不能占列表的空间
+        Box(Modifier.fillMaxWidth().weight(1f)) {
+            LazyColumn(
+                state = listState,
+                contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 4.dp, bottom = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(playlists, key = { it.id }) { p ->
+                    val entries = p.resolve(projects)
+                    val missing = entries.count { it is PlaylistEntry.Missing }
+                    PlaylistRow(
+                        playlist = p,
+                        // 左侧缩略图 = 列表里第一首「可用」项目的封面
+                        firstProject = entries.filterIsInstance<PlaylistEntry.Available>()
+                            .firstOrNull()?.project,
+                        total = entries.size,
+                        missing = missing,
+                        selecting = selecting,
+                        selected = p.id in selection,
+                        onClick = {
+                            if (selecting) {
+                                if (p.id in selection) selection.remove(p.id) else selection.add(p.id)
+                            } else {
+                                // WP: 点行直接开播；编辑挪到右侧 ⋮ 菜单
+                                onPlay(p)
+                            }
+                        },
+                        onLongClick = { if (p.id !in selection) selection.add(p.id) },
+                        onEdit = { onEdit(p) },
+                        onExport = { onExport(listOf(p)) },
+                        onDelete = { pendingDelete = p },
+                    )
+                }
             }
+            // 右侧快速定位滑块（列表长到装不下时才出现）
+            val scrollInfo = listState.layoutInfo
+            // 一行占多高：直接量相邻两行的 offset 差（已含 10dp 行间距），
+            // 用来把浮点位置换算成「项内偏移像素」，没有它就只能按项跳，拖起来一格一格蹦。
+            val visibleRows = scrollInfo.visibleItemsInfo
+            val baseRowOffset = visibleRows.firstOrNull()?.offset ?: 0
+            val rowStridePx = visibleRows.firstOrNull { it.offset != baseRowOffset }
+                ?.let { (it.offset - baseRowOffset).toFloat() }
+                ?: 0f
+            WpScrollBar(
+                totalItems = scrollInfo.totalItemsCount,
+                firstVisible = listState.firstVisibleItemIndex,
+                firstVisibleOffsetPx = listState.firstVisibleItemScrollOffset,
+                itemsPerRow = 1,
+                viewportPx = scrollInfo.viewportSize.height,
+                stridePx = rowStridePx,
+                verticalContentPaddingPx = with(LocalDensity.current) { 8.dp.toPx() },
+                onSeek = { index, offset -> listState.scrollToItem(index, offset) },
+                modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(),
+            )
         }
     }
 
@@ -189,20 +234,50 @@ fun PlaylistsScreen(
             dismissButton = { TextButton(onClick = { creating = false }) { Text("取消") } },
         )
     }
+
+    // WP: 右侧 ⋮ 菜单里的「删除」——破坏性动作必须过确认，
+    // 但只说清楚「删的是列表不是曲目」，和编辑页里那个删除弹窗口径一致。
+    pendingDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除这个播放列表？") },
+            text = { Text("只删除列表本身，里面的项目不会被删除。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDelete = null
+                    onBatchDelete(listOf(target))
+                }) { Text("删除", color = Color(0xFFFF8A80)) }
+            },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text("取消") } },
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PlaylistRow(
     playlist: Playlist,
+    /** 列表里第一首可用项目；用来做左侧缩略图（null = 空列表或全是失效项） */
+    firstProject: Project?,
     total: Int,
     missing: Int,
     selecting: Boolean,
     selected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    onEdit: () -> Unit,
+    onExport: () -> Unit,
+    onDelete: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val firstCoverFile = remember(firstProject?.coverFile) {
+        firstProject?.coverFile?.let { File(File(context.filesDir, "media"), it) }
+    }
+    val firstCover = rememberCoverBitmap(firstCoverFile, 140)
     val shape = RoundedCornerShape(16.dp)
+    // WP: 菜单开关挂在行上（不是挂在 `if (selecting)` 的 else 分支里）——
+    // 分支内 remember 的槽位会随分支切换被复用，曾经踩过状态错乱的坑。
+    var menuOpen by remember { mutableStateOf(false) }
     Row(
         Modifier
             .fillMaxWidth()
@@ -217,10 +292,12 @@ private fun PlaylistRow(
             .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            Modifier.size(46.dp).clip(RoundedCornerShape(11.dp)).background(Color(0xFF3A3F4C)),
-            contentAlignment = Alignment.Center
-        ) { Text("≡", fontSize = 18.sp, color = Color(0xFFC9CED8)) }
+        // WP: 原来是「≡」占位图形，现在换成列表第一首曲子的封面 —— 一眼能认出是哪个歌单
+        CoverView(
+            bitmap = firstCover,
+            modifier = Modifier.size(46.dp).clip(RoundedCornerShape(11.dp)),
+            placeholderColor = Color(0xFF3A3F4C),
+        )
 
         Spacer(Modifier.width(12.dp))
 
@@ -249,7 +326,28 @@ private fun PlaylistRow(
                 if (selected) Text("✓", fontSize = 13.sp, color = Color(0xFF07203A))
             }
         } else {
-            Text("›", fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            // WP: 原来是纯文字 `›`（点击等于「进编辑页」）。现在点整行是播放，
+            // 编辑/导出/删除收进这个 ⋮ 菜单，所以这里换成真按钮：
+            // WpIconButton 自带 44 热区，和整行的 combinedClickable 嵌套时它会先消费点击。
+            Box {
+                WpIconButton(onClick = { menuOpen = true }, visual = 0.dp) { tint ->
+                    IconMoreVertical(tint, 18.dp)
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("编辑", fontSize = 12.sp) },
+                        onClick = { menuOpen = false; onEdit() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("导出 .wplist", fontSize = 12.sp) },
+                        onClick = { menuOpen = false; onExport() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("删除", fontSize = 12.sp, color = Color(0xFFFF8A80)) },
+                        onClick = { menuOpen = false; onDelete() },
+                    )
+                }
+            }
         }
     }
 }
@@ -335,7 +433,10 @@ fun PlaylistEditScreen(
             Modifier.fillMaxWidth().padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TextButton(onClick = { persist(); onBack() }) { Text("←", fontSize = 17.sp) }
+            // WP: 全应用统一用 IconBack 的细 chevron，这里原来是一段文字「←」
+            WpIconButton(onClick = { persist(); onBack() }, visual = 0.dp) { tint ->
+                IconBack(tint, 18.dp)
+            }
             Spacer(Modifier.weight(1f))
             Text(name, fontSize = 15.sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Spacer(Modifier.weight(1f))

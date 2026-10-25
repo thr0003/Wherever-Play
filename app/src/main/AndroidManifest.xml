@@ -2,6 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- Demo 阶段使用 SAF 选文件，无需申请存储权限 -->
+    <!-- 例外：封面「另存图片」在 API 24–28 上要往公共 Pictures 目录写，必须这个权限；
+         API 29+ 走 MediaStore + RELATIVE_PATH，不需要。maxSdkVersion 把影响面锁死在老系统。 -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
     <application
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"

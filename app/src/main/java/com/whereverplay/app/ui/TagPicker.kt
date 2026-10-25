@@ -3,6 +3,7 @@ package com.whereverplay.app.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -28,10 +29,32 @@ import androidx.compose.ui.unit.sp
 private val TagMuted = Color(0xFF6E6E78)
 
 /**
+ * 乐器标签 → 前置图标（**预留接口**）。
+ *
+ * 现在还没有具象化图标资源，统一返回 null，也就是 chip 的布局与改造前完全一致。
+ * 以后配图标只改这一个函数，TagPicker 与 WpChip 都不用动：
+ *
+ * ```
+ * "鼓"     -> { tint -> IconDrum(tint, 14.dp) }
+ * "电吉他" -> { tint -> IconElectricGuitar(tint, 14.dp) }
+ * ```
+ *
+ * 图标按「标签名」映射、**不落盘**，所以 TagStore 的存储结构不用改，加图标不需要数据迁移。
+ */
+private fun tagIconOf(tag: String): (@Composable (Color) -> Unit)? = when (tag) {
+    else -> null
+}
+
+/**
  * WP: 乐器标签选择器（单选 + 新建）。
  *
- * 用「固定 3 列」而不是 FlowRow：FlowRow 在这个 Compose 版本里还是实验 API，
- * 而标签最多 20 个、名字最长 12 字，三列等宽已经够整齐，没必要为此引入 opt-in。
+ * 2026-10-25 改版：
+ *  - 布局从「固定 3 列等宽」改成 **FlowRow 流式**。标签名字有长有短（「鼓」vs「尤克里里」），
+ *    等宽三列会让短标签左边一大片空白、长标签被挤到换行，看着比流式更乱。
+ *    FlowRow 在当前 Compose 版本已稳定，不需要 opt-in。
+ *  - 说明文案规范化：先说「单选」，再说「不够用怎么办」，最后给上限。
+ *  - 每个 chip 预留了前置图标槽（[tagIconOf]），后续给部分乐器配具象化图标时
+ *    **只改那个函数**，这里一行不用动。
  *
  * @param onAdd 返回 false 表示没加成（重名 / 已满），弹窗会给出对应提示而不是静默失败
  */
@@ -81,31 +104,27 @@ fun TagPickerDialog(
                     }
                 } else {
                     Text(
-                        "一个项目只能选一个乐器。冷门乐器可以自己加，总共最多 $maxTags 个。",
+                        "单选。没有合适的乐器时，点「新建标签」自行添加（上限 $maxTags 个，含内置标签）。",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(Modifier.height(10.dp))
-                    // 固定三列，最后一行不足三个用空占位补齐，避免 chip 忽宽忽窄
-                    tags.chunked(3).forEach { rowTags ->
-                        Row(
-                            Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            rowTags.forEach { tag ->
-                                WpChip(
-                                    text = tag,
-                                    onClick = { onPick(tag) },
-                                    selected = tag == current,
-                                    height = 32.dp,
-                                    fontSize = 12.sp,
-                                    horizontalPadding = 4.dp,
-                                    modifier = Modifier.weight(1f),
-                                )
-                            }
-                            repeat(3 - rowTags.size) {
-                                Box(Modifier.weight(1f))
-                            }
+                    Spacer(Modifier.height(12.dp))
+                    // 流式排布：标签按自身宽度排列，末尾自然换行，不再强求每行几个
+                    FlowRow(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        tags.forEach { tag ->
+                            WpChip(
+                                text = tag,
+                                onClick = { onPick(tag) },
+                                selected = tag == current,
+                                height = 32.dp,
+                                fontSize = 12.sp,
+                                horizontalPadding = 14.dp,
+                                leadingIcon = tagIconOf(tag),
+                            )
                         }
                     }
                     if (!canAdd) {

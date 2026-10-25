@@ -429,9 +429,9 @@ fun PlaybackScreen(
         // ---------- 谱面：三页并排，跟手位移 ----------
         // 上下给固定留白（顶栏 56 / 控制区），而不是让谱面钻到控制栏底下：
         // 谱面被压住的那十几 %，正好是排练记号、页码所在的位置。
-        // 多曲时控制区多一行（提前量组挪上去了），留白随之 +12，避免谱面被压住 12dp。
         // 留白仍是**常量**，不随控制栏显隐变化 —— 一变谱面就会在翻页时上下跳（坑 #3）。
-        val controlBarHeight = if (multi) 112.dp else 100.dp
+        // 2026-10-25：提前量组收进右上角菜单后，多曲与单曲共用同一个高度（原来多曲是 112）。
+        val controlBarHeight = 100.dp
         Box(
             Modifier
                 .fillMaxSize()
@@ -567,8 +567,23 @@ fun PlaybackScreen(
                     WpIconButton(onClick = { menuOpen = true }, visual = 0.dp) { tint ->
                         IconMoreVertical(tint, 18.dp)
                     }
-                    // 低频动作全部收在这里（设计稿要求只留 4 项）
+                    // 低频动作全部收在这里。2026-10-25 起是 5 项：翻页提前量进了菜单首位
+                    // （原来常驻底部控制行，360dp 上和播放键抢位置）。
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    "翻页提前量　${if (offsetMs > 0) "+" else ""}${offsetMs}ms",
+                                    fontSize = 12.sp,
+                                )
+                            },
+                            onClick = {
+                                menuOpen = false
+                                // 把当前值带进弹窗的输入框，省得用户自己对着数字敲
+                                offsetInput = offsetMs.toString()
+                                offsetInputOpen = true
+                            },
+                        )
                         DropdownMenuItem(
                             text = { Text(if (keepOn) "关闭屏幕常亮" else "开启屏幕常亮", fontSize = 12.sp) },
                             onClick = {
@@ -624,9 +639,9 @@ fun PlaybackScreen(
                     .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 // 行 1：进度条独占一行 2:14 ——●—— 5:29
-                // 多曲时提前量组并入这一行（多出 12dp 高），理由见下方行 2 的注释。
+                // （提前量组已搬到右上角菜单，这一行两种模式都是 22dp）
                 Row(
-                    Modifier.fillMaxWidth().height(if (multi) 34.dp else 22.dp),
+                    Modifier.fillMaxWidth().height(22.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
@@ -669,29 +684,16 @@ fun PlaybackScreen(
                         textAlign = TextAlign.End,
                         modifier = Modifier.width(36.dp),
                     )
-                    if (multi) {
-                        Spacer(Modifier.width(6.dp))
-                        OffsetStepper(
-                            offsetMs = offsetMs,
-                            onStep = { applyOffset(offsetMs + it) },
-                            onSettle = { applyOffset((offsetMs / 50.0).roundToLong() * 50L) },
-                            onValueTap = {
-                                offsetInput = offsetMs.toString()
-                                offsetInputOpen = true
-                            },
-                        )
-                    }
                 }
 
                 Spacer(Modifier.height(6.dp))
 
                 // 行 2：上一首 · 播放 · 下一首（播放键严格居中）
                 //
-                // WP: 为什么多曲时提前量组不在这一行 —— 360dp 机型上这一行里
-                // 「两个 44 热区 + 56 播放键 + 提前量组(124)」= 268dp，加上两侧留白就顶满，
-                // 播放键只要居中就必然和提前量组压在一起。设计稿原方案（左组靠左、提前量靠右）
-                // 能放下，但播放键就不在中间了。用户明确要求「播放键居中」，所以把
-                // 提前量组升到进度行：它本来就是「调一次就不动」的参数，和进度条同属信息带。
+                // WP: 提前量组原来挂在这一行右端，多曲时还被挤到进度行 —— 360dp 上
+                // 「两个 44 热区 + 56 播放键 + 提前量组 124」必然压到播放键。
+                // 现在整组收进右上角「⋮」菜单，这一行只剩播放控制本身，
+                // 单曲（只有播放键居中）和多曲（上/下一首对称分居两侧）用同一套布局。
                 if (multi) {
                     Box(Modifier.fillMaxWidth().height(56.dp)) {
                         Row(
@@ -720,16 +722,6 @@ fun PlaybackScreen(
                             isPlaying,
                             modifier = Modifier.align(Alignment.Center),
                         ) { togglePlay() }
-                        OffsetStepper(
-                            offsetMs = offsetMs,
-                            onStep = { applyOffset(offsetMs + it) },
-                            onSettle = { applyOffset((offsetMs / 50.0).roundToLong() * 50L) },
-                            onValueTap = {
-                                offsetInput = offsetMs.toString()
-                                offsetInputOpen = true
-                            },
-                            modifier = Modifier.align(Alignment.CenterEnd),
-                        )
                     }
                 }
 
@@ -763,7 +755,21 @@ fun PlaybackScreen(
                         fontSize = 11.sp,
                         color = Color(0xFFA8A8B2),
                     )
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(14.dp))
+                    // WP: `− 值 ＋` 从底部控制行搬进这个弹窗，交互一点没减：
+                    // 单击 ±100、长按 100ms 连发（首延迟 300）、松手吸附 50ms 网格。
+                    // 点中间的数值不会关弹窗，只是把当前值同步到下面的输入框。
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        OffsetStepper(
+                            offsetMs = offsetMs,
+                            onStep = { applyOffset(offsetMs + it) },
+                            onSettle = { applyOffset((offsetMs / 50.0).roundToLong() * 50L) },
+                            onValueTap = { offsetInput = offsetMs.toString() },
+                        )
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Text("或直接输入毫秒数", fontSize = 11.sp, color = Color(0xFFA8A8B2))
+                    Spacer(Modifier.height(6.dp))
                     OutlinedTextField(
                         value = offsetInput,
                         onValueChange = { offsetInput = it.filter { c -> c == '-' || c.isDigit() }.take(5) },
@@ -911,6 +917,8 @@ private fun PlayPauseButton(
     WpTapArea(
         onClick = onClick,
         modifier = modifier.size(56.dp),
+        // 涟漪裁成 56 圆，和实心播放键完全重叠（不裁的话四角会露出方框）
+        rippleShape = wpRippleCircle(56.dp),
         contentAlignment = Alignment.Center,
     ) {
         Box(
@@ -928,7 +936,10 @@ private fun PlayPauseButton(
 /* ================= 提前量 ================= */
 
 /**
- * WP: 提前量组 `− 值 ＋`，常驻控制行右端。
+ * WP: 提前量组 `− 值 ＋`。
+ *
+ * **2026-10-25 起只出现在「⋮ → 翻页提前量」的弹窗里**，不再常驻底部控制行
+ * （360dp 上它和居中的播放键抢位置，多曲时还被挤到进度行，导致两种模式布局不一致）。
  *
  * 为什么不用 Slider：演出前调的是「几十毫秒」级别，滑块一动就是几百，
  * 反而找不到原位。−/＋ 单击 100ms、长按 100ms 连发（首延迟 300ms）、

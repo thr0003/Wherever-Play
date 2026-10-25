@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -47,6 +49,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.whereverplay.app.domain.Project
@@ -96,6 +99,7 @@ fun ProjectListScreen(
     var tagFilter by remember { mutableStateOf<String?>(null) }
     val selection = remember { mutableStateListOf<String>() }
     val selecting = selection.isNotEmpty()
+    val gridState = rememberLazyGridState()
 
     // 筛选菜单只列「真的有项目在用」的标签 —— 20 个标签全列出来菜单会长到点不动
     val usedTags = remember(projects) {
@@ -179,8 +183,9 @@ fun ProjectListScreen(
                         DropdownMenuItem(
                             text = {
                                 Text(
-                                    (if (tagFilter == null) "✓ " else "   ") + "全部乐器",
+                                    "全部乐器",
                                     fontSize = 12.sp,
+                                    fontWeight = if (tagFilter == null) FontWeight.Medium else FontWeight.Normal,
                                     color = if (tagFilter == null) MaterialTheme.colorScheme.primary
                                     else MaterialTheme.colorScheme.onBackground
                                 )
@@ -198,9 +203,11 @@ fun ProjectListScreen(
                         usedTags.forEach { tag ->
                             DropdownMenuItem(
                                 text = {
+                                    // WP: 不再用「✓ 」前缀打钩，选中只靠颜色 + 字重区分
                                     Text(
-                                        (if (tagFilter == tag) "✓ " else "   ") + tag,
+                                        tag,
                                         fontSize = 12.sp,
+                                        fontWeight = if (tagFilter == tag) FontWeight.Medium else FontWeight.Normal,
                                         color = if (tagFilter == tag) MaterialTheme.colorScheme.primary
                                         else MaterialTheme.colorScheme.onBackground
                                     )
@@ -231,8 +238,9 @@ fun ProjectListScreen(
                             DropdownMenuItem(
                                 text = {
                                     Text(
-                                        (if (sort == option) "✓ " else "   ") + option.label,
+                                        option.label,
                                         fontSize = 12.sp,
+                                        fontWeight = if (sort == option) FontWeight.Medium else FontWeight.Normal,
                                         color = if (sort == option) MaterialTheme.colorScheme.primary
                                         else MaterialTheme.colorScheme.onBackground
                                     )
@@ -254,8 +262,9 @@ fun ProjectListScreen(
                             DropdownMenuItem(
                                 text = {
                                     Text(
-                                        (if (sortAsc == asc) "✓ " else "   ") + label,
+                                        label,
                                         fontSize = 12.sp,
+                                        fontWeight = if (sortAsc == asc) FontWeight.Medium else FontWeight.Normal,
                                         color = if (sortAsc == asc) MaterialTheme.colorScheme.primary
                                         else MaterialTheme.colorScheme.onBackground
                                     )
@@ -269,8 +278,9 @@ fun ProjectListScreen(
                 Spacer(Modifier.width(4.dp))
 
                 Box {
-                    WpPillAction(text = "新建", onClick = { plusMenu = true }) { tint ->
-                        IconPlus(tint, 13.dp)
+                    // WP: 胶囊里不再写「新建」两个字，只留 +（用户明确要求）
+                    WpPillAction(text = "", onClick = { plusMenu = true }) { tint ->
+                        IconPlus(tint, 15.dp)
                     }
                     DropdownMenu(expanded = plusMenu, onDismissRequest = { plusMenu = false }) {
                         DropdownMenuItem(
@@ -364,36 +374,64 @@ fun ProjectListScreen(
             return@Column
         }
 
-        LazyVerticalGrid(
-            // WP: 原来 Adaptive(168) 在 360dp 屏算出 1 列 → 整屏一个巨幅方块。
-            // (360 − 36 + 12) ÷ (168 + 12) = 1，这就是根因。固定 2 列后每列 162dp。
-            columns = GridCells.Fixed(2),
-            contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 2.dp, bottom = 110.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            items(visible, key = { it.id }) { p ->
-                ProjectCard(
-                    project = p,
-                    selected = p.id in selection,
-                    selecting = selecting,
-                    onClick = {
-                        if (selecting) {
-                            if (p.id in selection) selection.remove(p.id) else selection.add(p.id)
-                        } else {
-                            onOpen(p)
-                        }
-                    },
-                    onLongClick = {
-                        if (p.id !in selection) selection.add(p.id)
-                    },
-                    onToggleFavorite = { onToggleFavorite(p) },
-                    onShowDetail = { onShowDetail(p) },
-                    onEdit = { onEdit(p) },
-                    onExport = { onExport(p) },
-                    onDelete = { onDelete(p) },
-                )
+        // Box 包裹：滚动条压在列表右侧，不占列表宽度
+        Box(Modifier.fillMaxWidth().weight(1f)) {
+            LazyVerticalGrid(
+                state = gridState,
+                // WP: 原来 Adaptive(168) 在 360dp 屏算出 1 列 → 整屏一个巨幅方块。
+                // (360 − 36 + 12) ÷ (168 + 12) = 1，这就是根因。固定 2 列后每列 162dp。
+                columns = GridCells.Fixed(GRID_COLUMNS),
+                contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 2.dp, bottom = 110.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(visible, key = { it.id }) { p ->
+                    ProjectCard(
+                        project = p,
+                        selected = p.id in selection,
+                        selecting = selecting,
+                        onClick = {
+                            if (selecting) {
+                                if (p.id in selection) selection.remove(p.id) else selection.add(p.id)
+                            } else {
+                                onOpen(p)
+                            }
+                        },
+                        onLongClick = {
+                            if (p.id !in selection) selection.add(p.id)
+                        },
+                        onToggleFavorite = { onToggleFavorite(p) },
+                        onShowDetail = { onShowDetail(p) },
+                        onEdit = { onEdit(p) },
+                        onExport = { onExport(p) },
+                        onDelete = { onDelete(p) },
+                    )
+                }
             }
+            // 右侧快速定位滑块（网格长到装不下时才出现）
+            val scrollInfo = gridState.layoutInfo
+            val density = LocalDensity.current
+            // 一行占多高：直接量「下一行」和「第一行」的 offset 差，比卡片高 + 行间距更准，
+            // 也不用碰 IntSize/Dp 的单位换算。网格里同一行的多列 offset.y 相同，所以先跳过它们。
+            // 有了它滑块才能换算成「项内偏移像素」，否则只能按项跳，拖起来一格一格蹦。
+            val visibleRows = scrollInfo.visibleItemsInfo
+            val baseRowY = visibleRows.firstOrNull()?.offset?.y ?: 0
+            val rowStridePx = visibleRows.firstOrNull { it.offset.y != baseRowY }
+                ?.let { (it.offset.y - baseRowY).toFloat() }
+                ?: 0f
+            WpScrollBar(
+                totalItems = scrollInfo.totalItemsCount,
+                firstVisible = gridState.firstVisibleItemIndex,
+                firstVisibleOffsetPx = gridState.firstVisibleItemScrollOffset,
+                itemsPerRow = GRID_COLUMNS,
+                viewportPx = scrollInfo.viewportSize.height,
+                stridePx = rowStridePx,
+                // top 2 + bottom 110：底部要留出浮动栏的位置，这段也是可滚范围
+                verticalContentPaddingPx = with(density) { 112.dp.toPx() },
+                // onSeek 是 suspend 的：这里直接给挂起函数，不要包 scope.launch
+                onSeek = { index, offset -> gridState.scrollToItem(index, offset) },
+                modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(),
+            )
         }
     }
 }
@@ -556,3 +594,5 @@ private fun placeholderColorOf(seed: String): Color {
     )
     return palette[(seed.hashCode() and 0x7fffffff) % palette.size]
 }
+/** 项目页网格列数。滚动条要靠它把 item 索引换成行号，改这里就够 */
+private const val GRID_COLUMNS = 2

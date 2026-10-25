@@ -28,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,9 +38,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.whereverplay.app.data.FileSaver
 import com.whereverplay.app.data.MediaInstaller
 import com.whereverplay.app.domain.Project
 import com.whereverplay.app.domain.TimeFormat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -50,6 +55,9 @@ import java.io.File
  *  - **编辑**（ProjectEditScreen）：换音频、换谱面、重新打点、导出 .wplay、删除项目。
  * 曾经详情页底部还挂着「更换文件 / 重新打点」「导出」「删除」三个按钮，
  * 和右上角的「编辑」入口完全重复，还让「看信息」这一页看着像操作台 —— 已全部下放到编辑页。
+ *
+ * 2026-10-25：点封面不再是「直接换图」，改成**全屏看图**，换图变成看图页底部的一个动作
+ * （另存图片 / 更换图片）。理由是换图是低频动作，而「想看清封面」才是点它的直觉。
  */
 @Composable
 fun ProjectDetailScreen(
@@ -64,21 +72,68 @@ fun ProjectDetailScreen(
     onOpenEdit: (Project) -> Unit,
     onUpdate: (Project) -> Unit,
     onAddTag: (String) -> Boolean,
+    onNotify: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var editingInfo by remember { mutableStateOf(false) }
     var pickingTag by remember { mutableStateOf(false) }
+    var viewerOpen by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+    var saveHint by remember { mutableStateOf<String?>(null) }
 
     val coverFile = remember(project.coverFile) {
         project.coverFile?.let { File(File(context.filesDir, "media"), it) }
     }
     val cover = rememberCoverBitmap(coverFile, 512)
+    // 全屏看时才按大图解码，避免列表/详情页常驻一张 1600px 的位图
+    val bigCover = if (viewerOpen) rememberCoverBitmap(coverFile, 1600) else null
 
     val pickCover = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             installer.copyInSquareCover(uri)?.let { name ->
                 onUpdate(project.copy(coverFile = name))
+                viewerOpen = false
             }
+        }
+    }
+
+    /** 存进系统相册（API<29 需要 WRITE_EXTERNAL_STORAGE，由下面的权限启动器兜底） */
+    fun saveCoverToGallery() {
+        val file = coverFile
+        if (file == null || !file.exists()) {
+            onNotify("这个项目还没有封面图")
+            return
+        }
+        saving = true
+        saveHint = null
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    FileSaver.saveImageToGallery(
+                        context = context,
+                        source = file,
+                        displayName = FileSaver.safeBaseName(project.name, "封面") + "-封面.jpg",
+                    )
+                }
+            }
+            saving = false
+            result.onSuccess { saveHint = "已保存到相册 Pictures/WhereverPlay" }
+                .onFailure { saveHint = "保存失败：${it.message ?: "未知原因"}" }
+        }
+    }
+
+    val legacyPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) saveCoverToGallery() else onNotify("没有存储权限，无法保存到相册")
+    }
+
+    fun startSaveCover() {
+        if (FileSaver.needsLegacyWritePermission(context)) {
+            legacyPermission.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            saveCoverToGallery()
         }
     }
 
@@ -123,11 +178,8 @@ fun ProjectDetailScreen(
                         Modifier
                             .matchParentSize()
                             .clip(RoundedCornerShape(14.dp))
-                            .clickable {
-                                pickCover.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                )
-                            }
+                            // WP: 点封面 = 全屏看图（换图挪到看图页里）
+                            .clickable { viewerOpen = true }
                     )
                 }
                 Spacer(Modifier.width(16.dp))
@@ -146,7 +198,7 @@ fun ProjectDetailScreen(
                         color = if (project.configured) Color(0xFF8FD9C4) else Color(0xFFF0C070)
                     )
                     Spacer(Modifier.height(2.dp))
-                    Text("点封面可换图", fontSize = 10.sp, color = Color(0xFF6E6E78))
+                    Text("点封面可看大图", fontSize = 10.sp, color = Color(0xFF6E6E78))
                 }
             }
 
@@ -254,6 +306,26 @@ fun ProjectDetailScreen(
             },
             onAdd = onAddTag,
             onDismiss = { pickingTag = false },
+        )
+    }
+
+    // ---------- 全屏看图：另存图片 / 更换图片 ----------
+    if (viewerOpen) {
+        ImageViewerOverlay(
+            bitmap = bigCover,
+            title = project.name,
+            busy = saving,
+            hint = saveHint,
+            onClose = {
+                viewerOpen = false
+                saveHint = null
+            },
+            onSave = { startSaveCover() },
+            onReplace = {
+                pickCover.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                )
+            },
         )
     }
 

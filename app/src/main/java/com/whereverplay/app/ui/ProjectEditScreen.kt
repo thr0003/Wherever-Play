@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,11 +35,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.whereverplay.app.data.FileSaver
 import com.whereverplay.app.data.MediaInstaller
 import com.whereverplay.app.domain.Mark
 import com.whereverplay.app.domain.Project
 import com.whereverplay.app.domain.TimeFormat
 import com.whereverplay.app.pdf.PdfPageRenderer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
@@ -59,11 +65,45 @@ fun ProjectEditScreen(
     onUpdate: (Project) -> Unit,
     onExport: (Project) -> Unit,
     onDelete: (Project) -> Unit,
+    onNotify: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var pendingReplace by remember { mutableStateOf<String?>(null) } // "audio" | "pdf"
     var replaceError by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
+
+    // 另存：记住「要存哪个文件、建议什么名字」，等 SAF 回调回来再写
+    var pendingSaveFile by remember { mutableStateOf<File?>(null) }
+    var pendingSaveName by remember { mutableStateOf("") }
+    val savePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("*/*")
+    ) { uri ->
+        val file = pendingSaveFile
+        pendingSaveFile = null
+        if (uri == null || file == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { FileSaver.copyFileToUri(context, file, uri) }
+            }
+            result.onSuccess { onNotify("已另存 ${pendingSaveName}") }
+                .onFailure { onNotify("另存失败：${it.message ?: "未知原因"}") }
+        }
+    }
+
+    /** 打开「另存为」对话框；文件名带上项目名，方便用户之后辨认 */
+    fun askSave(fileName: String, suffix: String) {
+        val file = installer.fileOf(fileName)
+        if (!file.exists()) {
+            onNotify("文件缺失，无法另存")
+            return
+        }
+        val ext = fileName.substringAfterLast('.', "")
+        val base = FileSaver.safeBaseName(project.name, "项目")
+        pendingSaveFile = file
+        pendingSaveName = if (ext.isBlank()) "$base-$suffix" else "$base-$suffix.$ext"
+        savePicker.launch(pendingSaveName)
+    }
 
     val pickAudio = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -151,7 +191,9 @@ fun ProjectEditScreen(
                 title = "伴奏音频",
                 detail = "${TimeFormat.mmss(project.durationMs)} · ${sizeText(project.audioFile)}",
                 action = "更换歌曲",
-            ) { pendingReplace = "audio" }
+                onSave = { askSave(project.audioFile, "伴奏") },
+                onReplace = { pendingReplace = "audio" },
+            )
 
             Spacer(Modifier.height(10.dp))
 
@@ -159,7 +201,9 @@ fun ProjectEditScreen(
                 title = "PDF 谱面",
                 detail = "${project.pageCount} 页 · ${sizeText(project.pdfFile)}",
                 action = "更换谱面",
-            ) { pendingReplace = "pdf" }
+                onSave = { askSave(project.pdfFile, "谱面") },
+                onReplace = { pendingReplace = "pdf" },
+            )
 
             replaceError?.let {
                 Spacer(Modifier.height(10.dp))
@@ -261,16 +305,26 @@ fun ProjectEditScreen(
     }
 }
 
+/**
+ * WP: 一个文件条目：左边是什么文件，右边两个动作。
+ * 2026-10-25：整行不再可点（原来点哪都触发「更换」），改成右侧两个独立按钮「另存 / 更换」，
+ * 避免想备份文件时误触更换（更换会清空全部打点，代价太大）。
+ */
 @Composable
-private fun EditRow(title: String, detail: String, action: String, onClick: () -> Unit) {
+private fun EditRow(
+    title: String,
+    detail: String,
+    action: String,
+    onSave: () -> Unit,
+    onReplace: () -> Unit,
+) {
     val shape = RoundedCornerShape(14.dp)
     Row(
         Modifier
             .fillMaxWidth()
             .clip(shape)
             .background(Glass.fill)
-            .clickable { onClick() }
-            .padding(horizontal = 14.dp, vertical = 14.dp),
+            .padding(start = 14.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f)) {
@@ -278,7 +332,20 @@ private fun EditRow(title: String, detail: String, action: String, onClick: () -
             Spacer(Modifier.height(3.dp))
             Text(detail, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Spacer(Modifier.width(10.dp))
-        Text(action, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.width(6.dp))
+        TextButton(
+            onClick = onSave,
+            modifier = Modifier.height(44.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp),
+        ) {
+            Text("另存", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        TextButton(
+            onClick = onReplace,
+            modifier = Modifier.height(44.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp),
+        ) {
+            Text(action, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+        }
     }
 }
