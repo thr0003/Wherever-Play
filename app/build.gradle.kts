@@ -15,9 +15,10 @@ android {
         minSdk = 24
         targetSdk = 37
         // WP: versionCode 必须严格单调递增（覆盖安装靠它判断升级），versionName 给人看。
-        //     首个版本定为 0.1.0，对应 versionCode 100；之后按 0.x 递增（0.1.1 -> 101）。
-        versionCode = 100
-        versionName = "0.1.0"
+        //     首个版本定为 0.1.0，对应 versionCode 100；之后按 0.x 递增（0.2.0 -> 200）。
+        //     设置页「关于 → 版本」直接读 BuildConfig，改这里就够，别在别处硬编码版本号。
+        versionCode = 200
+        versionName = "0.2.0"
     }
 
     buildFeatures {

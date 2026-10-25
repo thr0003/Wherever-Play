@@ -95,7 +95,7 @@ Demo 的核心是 PDF 渲染与音频同步，**模拟器测不出真实性能**
 
 ### 装好之后
 
-桌面上出现名为 **Wherever Play** 的图标，点击即可运行（不必每次都从 AS 启动）。
+桌面上出现名为 **WhePlay** 的图标，点击即可运行（不必每次都从 AS 启动）。
 
 ---
 
@@ -154,7 +154,7 @@ wherever play/
 | 只装到手机不启动 | `Run → Install 'app'`（或 Gradle 面板 → app → installDebug） |
 | 看构建产物 | `app/build/outputs/apk/debug/app-debug.apk` |
 | 卸载 App | 手机长按图标卸载，或命令行 `adb uninstall com.whereverplay.app` |
-| 清 App 数据（重置到空状态） | 手机 `设置 → 应用 → Wherever Play → 存储 → 清除数据` |
+| 清 App 数据（重置到空状态） | 手机 `设置 → 应用 → WhePlay → 存储 → 清除数据` |
 
 ---
 
