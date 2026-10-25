@@ -324,6 +324,14 @@ fun AppRoot() {
 
                         Route.Create -> CreateProjectScreen(
                             installer = installer,
+                            tags = tags,
+                            canAddTag = tagStore.canAdd(),
+                            maxTags = TagStore.MAX,
+                            onAddTag = { name ->
+                                val ok = tagStore.add(name)
+                                if (ok) tags = tagStore.all()
+                                ok
+                            },
                             onCancel = { route = null },
                             onCreated = { p ->
                                 repo.save(p)

@@ -267,16 +267,31 @@ fun PlaybackScreen(
     LaunchedEffect(project.id, displayPage, targetWidthPx) {
         val r = pdfRenderer ?: return@LaunchedEffect
         if (targetWidthPx <= 0) return@LaunchedEffect
-        val hit = r.cached(displayPage - 1)
-        if (hit == null) withContext(pdfDispatcher) { r.render(displayPage - 1, targetWidthPx) }
-        DebugStats.cacheHit = hit != null
-        DebugStats.lastRenderPage = displayPage
-        renderTick++
-        withContext(pdfDispatcher) {
-            val neighbours = ArrayList<Int>(2)
-            if (displayPage < r.pageCount) neighbours.add(displayPage)
-            if (displayPage - 2 >= 0) neighbours.add(displayPage - 2)
-            r.prefetch(neighbours, targetWidthPx)
+        try {
+            val hit = r.cached(displayPage - 1)
+            if (hit == null) withContext(pdfDispatcher) { r.render(displayPage - 1, targetWidthPx) }
+            DebugStats.cacheHit = hit != null
+            DebugStats.lastRenderPage = displayPage
+            // 渲染失败要能被看见：以前这里从不写 renderError，界面永远停在
+            // 「正在渲染第 N 页…」，看起来像卡死，实际是渲染抛了异常
+            DebugStats.renderError =
+                if (r.cached(displayPage - 1) == null) (r.lastError ?: "渲染返回空位图") else null
+
+            withContext(pdfDispatcher) {
+                val neighbours = ArrayList<Int>(2)
+                if (displayPage < r.pageCount) neighbours.add(displayPage)
+                if (displayPage - 2 >= 0) neighbours.add(displayPage - 2)
+                r.prefetch(neighbours, targetWidthPx)
+            }
+            // 预渲染可能把**当前页**挤出缓存（三页并排时缓存正好在临界）。
+            // 挤出后没有任何东西会再触发它渲染，界面就永远停在占位文字上 —— 这里补回来。
+            if (r.cached(displayPage - 1) == null) {
+                withContext(pdfDispatcher) { r.render(displayPage - 1, targetWidthPx) }
+            }
+        } finally {
+            // 这个 effect 被取消（快速连翻 / 切歌）时也要重绘一次：
+            // 位图可能已经进了缓存，但界面不会自己刷新
+            renderTick++
         }
     }
 
@@ -293,12 +308,23 @@ fun PlaybackScreen(
             val forward = displayPage > lastPage
             animating = true
             val start = if (forward) 1f else -1f
-            animate(
-                start,
-                0f,
-                animationSpec = tween(WpMotion.TURN_FORWARD_MS, easing = WpMotion.TurnEasing),
-            ) { v, _ -> animOffset = v }
+            try {
+                animate(
+                    start,
+                    0f,
+                    animationSpec = tween(WpMotion.TURN_FORWARD_MS, easing = WpMotion.TurnEasing),
+                ) { v, _ -> animOffset = v }
+            } finally {
+                // 被下一次翻页打断时 animate() 会抛 CancellationException，
+                // 不在这里清就会留下「animating=true + 半个屏的偏移」，
+                // 表现是谱面整体偏到一边、只露出另一页的一条边（手机上一度以为是渲染坏了）
+                animating = false
+                animOffset = 0f
+            }
+        } else {
+            // 关闭翻页动画 / 页码没变：把可能残留的偏移清干净
             animating = false
+            animOffset = 0f
         }
         lastPage = displayPage
     }
@@ -323,6 +349,20 @@ fun PlaybackScreen(
         // WP: 播放中点上一首/下一首 = 立刻从头播新的一首；
         // 暂停状态下保持暂停（停在新曲的第 1 页 0:00），不擅自开始播放。
         switchTo(target, autoPlay = isPlaying)
+    }
+
+    /**
+     * 把「跟手位移 / 动画位移」全部复位。
+     *
+     * WP: 手势被系统或重组打断时不会走 onDragEnd，拖到一半的 dragOffset 会**永久留着**，
+     * 表现是整个谱面偏到一边、只露出相邻页的一条边，看起来像渲染错位。
+     * 所有退出路径（正常松手 / 取消 / 动画被打断）都必须经过这里。
+     */
+    fun clearPageOffset() {
+        dragOffset = 0f
+        dragPeak = 0f
+        animOffset = 0f
+        animating = false
     }
 
     // 遮罩出现时，后台渲染下一首的第 1 页作为底色
@@ -400,10 +440,8 @@ fun PlaybackScreen(
                 .pointerInput(widthPx, displayPage) {
                     detectHorizontalDragGestures(
                         onDragStart = {
-                            animating = false
-                            dragOffset = 0f
+                            clearPageOffset()
                             dragStartedAt = System.currentTimeMillis()
-                            dragPeak = 0f
                         },
                         onDragEnd = {
                             // 位移到 12% 就翻；轻扫（快而短）也翻，避免"要滑很长才行"
@@ -422,23 +460,31 @@ fun PlaybackScreen(
                                 val startFrac = dragOffset / widthPx
                                 val targetFrac = if (direction == 0) 0f else -direction.toFloat()
                                 animating = true
-                                animate(
-                                    initialValue = startFrac,
-                                    targetValue = targetFrac,
-                                    animationSpec = tween(
-                                        if (direction == 0) WpMotion.TURN_BACK_MS else WpMotion.TURN_FORWARD_MS,
-                                        easing = WpMotion.TurnEasing,
-                                    ),
-                                ) { v, _ -> animOffset = v }
-                                if (direction != 0) {
-                                    // 翻页完成后 dragOffset 直接归零，不接第二段动画（否则会看到「翻两下」）
-                                    skipAutoAnim = true
-                                    manualPage = (displayPage + direction).coerceIn(1, project.pageCount)
-                                    animOffset = 0f
+                                try {
+                                    animate(
+                                        initialValue = startFrac,
+                                        targetValue = targetFrac,
+                                        animationSpec = tween(
+                                            if (direction == 0) WpMotion.TURN_BACK_MS
+                                            else WpMotion.TURN_FORWARD_MS,
+                                            easing = WpMotion.TurnEasing,
+                                        ),
+                                    ) { v, _ -> animOffset = v }
+                                    if (direction != 0) {
+                                        // 翻页完成后 dragOffset 直接归零，不接第二段动画（否则会看到「翻两下」）
+                                        skipAutoAnim = true
+                                        manualPage = (displayPage + direction).coerceIn(1, project.pageCount)
+                                    }
+                                } finally {
+                                    // 被打断（离场 / 又被拖了一下）也必须归位
+                                    clearPageOffset()
                                 }
-                                dragOffset = 0f
-                                animating = false
                             }
+                        },
+                        onDragCancel = {
+                            // WP: 手势被系统抢走（返回手势、多指、窗口失焦）时**不会**走 onDragEnd。
+                            // 不处理的话 dragOffset 停在拖到一半的位置，谱面就整体偏在一边。
+                            clearPageOffset()
                         },
                     ) { _, delta ->
                         dragOffset = (dragOffset + delta).coerceIn(-widthPx, widthPx)

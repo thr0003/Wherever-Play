@@ -36,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -273,7 +274,7 @@ fun PlaylistEditScreen(
     var adding by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
 
-    // 长按拖动排序：dragFrom 是被拖的行，dragDy 是相对起点的位移（像素）
+    // 长按拖动排序：dragFrom 是**当前**被拖的行（拖动过程中会随换位更新），dragDy 是相对本行的位移
     var dragFrom by remember(playlist.id) { mutableStateOf<Int?>(null) }
     var dragDy by remember(playlist.id) { mutableStateOf(0f) }
     // 行高 = 内容 58 + 间距 8，用来把位移换算成「换几位」
@@ -289,6 +290,41 @@ fun PlaylistEditScreen(
                 gapMs = gapMs,
             )
         )
+    }
+
+    /** 拖动过程中只改本地顺序，不落盘（松手才 save），避免每跨一行写一次 JSON */
+    fun moveEntry(from: Int, to: Int) {
+        if (from == to || from !in ids.indices || to !in ids.indices) return
+        ids = ids.toMutableList().also { it.add(to, it.removeAt(from)) }
+    }
+
+    /**
+     * WP: 拖动排序改成「边拖边换位」。
+     *
+     * 旧写法是「拖动期间只记位移，松手时用 位移/行高 反推目标位置」，结果不稳：
+     * 只要累计位移和真实行高差一点（密度、行内边距一改就偏），松手就会跳到错误的行，
+     * 用户看到的是「拖到两首之间，松手却跑到最上面」。
+     *
+     * 现在每越过半行就真换位，并把位移**减去整行**，所以：
+     *  - 被拖的行始终停在手指下面（不会越拖越远）；
+     *  - 目标位置由实际换位次数决定，不再依赖除法的取整结果。
+     */
+    fun stepDrag(dy: Float) {
+        val cur = dragFrom ?: return
+        if (rowPx <= 0f) return // 兜底：行高算不出来就别进循环（下面的 while 会死循环）
+        dragDy += dy
+        var idx = cur
+        while (dragDy > rowPx / 2f && idx < ids.lastIndex) {
+            moveEntry(idx, idx + 1)
+            idx += 1
+            dragDy -= rowPx
+        }
+        while (dragDy < -rowPx / 2f && idx > 0) {
+            moveEntry(idx, idx - 1)
+            idx -= 1
+            dragDy += rowPx
+        }
+        dragFrom = idx
     }
 
     // 放在 persist 之后声明：Kotlin 局部函数必须先声明后使用
@@ -346,20 +382,13 @@ fun PlaylistEditScreen(
                             dragFrom = index
                             dragDy = 0f
                         },
-                        onDrag = { dy -> if (dragFrom != null) dragDy += dy },
+                        onDrag = { dy -> stepDrag(dy) },
                         onDragEnd = {
-                            val from = dragFrom
+                            val moved = dragFrom != null
                             dragFrom = null
-                            if (from != null) {
-                                val target = (from + (dragDy / rowPx).roundToInt())
-                                    .coerceIn(0, ids.lastIndex)
-                                dragDy = 0f
-                                if (target != from) {
-                                    persist(ids.toMutableList().also { it.add(target, it.removeAt(from)) })
-                                }
-                            } else {
-                                dragDy = 0f
-                            }
+                            dragDy = 0f
+                            // 顺序真变了才落盘
+                            if (moved && ids != playlist.projectIds) persist()
                         },
                         onRemove = { persist(ids.toMutableList().also { it.removeAt(index) }) },
                     )
@@ -524,6 +553,12 @@ private fun EntryRow(
     }
     val cover = rememberCoverBitmap(coverFile, 160)
     val shape = RoundedCornerShape(12.dp)
+    // WP: pointerInput 的 key 是 Unit（不能每次重组都重建手势），所以它捕获的是**第一次**组合时
+    // 的回调。拖动换位后行内容变了、index 也变了，捕获旧回调会用到旧 index。
+    // 用 rememberUpdatedState 每次读最新的那个。
+    val startNow = rememberUpdatedState(onDragStart)
+    val dragNow = rememberUpdatedState(onDrag)
+    val endNow = rememberUpdatedState(onDragEnd)
     Row(
         Modifier
             .fillMaxWidth()
@@ -536,12 +571,12 @@ private fun EntryRow(
             )
             .pointerInput(Unit) {
                 detectDragGesturesAfterLongPress(
-                    onDragStart = { onDragStart() },
-                    onDragEnd = { onDragEnd() },
-                    onDragCancel = { onDragEnd() },
+                    onDragStart = { startNow.value() },
+                    onDragEnd = { endNow.value() },
+                    onDragCancel = { endNow.value() },
                 ) { change, dragAmount ->
                     change.consume()
-                    onDrag(dragAmount.y)
+                    dragNow.value(dragAmount.y)
                 }
             }
             .padding(start = 8.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),

@@ -93,8 +93,22 @@ class PdfPageRenderer(file: File) : Closeable {
     companion object {
         private const val TAG = "WP-PDF"
 
-        /** 缓存上限：24MB，约可容纳 7 页 A4 谱（按 3.3MB/页算） */
-        private const val MAX_CACHE_BYTES = 24 * 1024 * 1024
+        /**
+         * 缓存上限。
+         *
+         * 原来固定 24MB，按 3.3MB/页估的「7 页」—— **估错了**：那按 400dp 宽、密度 2 算的。
+         * 高密度手机（密度 3）上一页是 1200×1697 ARGB ≈ 8.1MB，24MB 只装得下 2 页多一点，
+         * 而播放页同时要「上一页 / 当前页 / 下一页」三张 —— 预渲染邻居时正好把**当前页**挤掉，
+         * 当前页于是永远停在「正在渲染第 N 页…」（没有东西会再触发它渲染）。
+         * 平板密度低、一页才 2MB 左右，所以同样的代码在平板上看起来没问题。
+         *
+         * 现在按系统版本分档：API 26 起 Bitmap 像素走 native 堆，可以放宽到 48MB（≈5 页高密度）；
+         * 26 以下像素还在 Java 堆里，保持保守值，避免老机器 OOM。
+         */
+        private val MAX_CACHE_BYTES: Int = run {
+            val mb = if (android.os.Build.VERSION.SDK_INT >= 26) 48 else 20
+            mb * 1024 * 1024
+        }
 
         /** 只读取页数，用于创建项目时校验（会立刻释放句柄） */
         fun pageCountOf(file: File): Int = runCatching {

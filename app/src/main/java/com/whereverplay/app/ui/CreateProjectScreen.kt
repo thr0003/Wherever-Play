@@ -47,6 +47,10 @@ private const val MAX_AUDIO_MS = 30L * 60L * 1000L
 @Composable
 fun CreateProjectScreen(
     installer: MediaInstaller,
+    tags: List<String>,
+    canAddTag: Boolean,
+    maxTags: Int,
+    onAddTag: (String) -> Boolean,
     onCancel: () -> Unit,
     onCreated: (Project) -> Unit,
 ) {
@@ -58,6 +62,10 @@ fun CreateProjectScreen(
     var coverLabel by remember { mutableStateOf("自动提取音频内嵌封面") }
     var name by remember { mutableStateOf("") }
     var author by remember { mutableStateOf("") }
+    // WP: 新建时就能选乐器标签 —— 之前只有详情页能选，新建出来的项目一律是「未设置」，
+    // 首页卡片左下角空着，筛选也筛不到，用户以为是标签功能坏了。
+    var tag by remember { mutableStateOf<String?>(null) }
+    var pickingTag by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
@@ -163,6 +171,24 @@ fun CreateProjectScreen(
             )
 
             Spacer(Modifier.height(12.dp))
+            // 乐器标签：和详情页同一套选择器，一个项目只能选一个
+            OutlinedButton(
+                onClick = { pickingTag = true },
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Box(Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "乐器标签：" + (tag ?: "未设置（可选）"),
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        color = if (tag != null) MaterialTheme.colorScheme.onBackground
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
             Text(
                 "音频、PDF 与封面会被复制进应用私有目录，原文件移动或删除都不影响使用。",
                 fontSize = 11.sp,
@@ -243,6 +269,7 @@ fun CreateProjectScreen(
                                             // 第 1 页固定在 0:00，数据模型的硬约束
                                             marks = listOf(com.whereverplay.app.domain.Mark(page = 1, timeMs = 0L)),
                                             isFavorite = false,
+                                            tag = tag,
                                             createdAt = now,
                                             lastOpenedAt = now,
                                         )
@@ -263,6 +290,21 @@ fun CreateProjectScreen(
 
             Spacer(Modifier.height(28.dp))
         }
+    }
+
+    if (pickingTag) {
+        TagPickerDialog(
+            current = tag,
+            tags = tags,
+            canAdd = canAddTag,
+            maxTags = maxTags,
+            onPick = { picked ->
+                tag = picked
+                pickingTag = false
+            },
+            onAdd = onAddTag,
+            onDismiss = { pickingTag = false },
+        )
     }
 }
 

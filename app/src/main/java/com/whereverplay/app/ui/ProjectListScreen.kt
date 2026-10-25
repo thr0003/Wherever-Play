@@ -88,6 +88,8 @@ fun ProjectListScreen(
     var query by remember { mutableStateOf("") }
     var filter by remember { mutableStateOf(ProjectFilter.All) }
     var sort by remember { mutableStateOf(ProjectSort.Recent) }
+    // 升降序：false = 降序。默认「最近修改 / 创建时间」用降序（新的在上），「名称」用升序（A→Z）
+    var sortAsc by remember { mutableStateOf(false) }
     var sortMenu by remember { mutableStateOf(false) }
     var filterMenu by remember { mutableStateOf(false) }
     var plusMenu by remember { mutableStateOf(false) }
@@ -103,7 +105,7 @@ fun ProjectListScreen(
     // 多选状态下按返回 = 退出选择，而不是退出到桌面
     androidx.activity.compose.BackHandler(enabled = selecting) { selection.clear() }
 
-    val visible = remember(projects, query, filter, sort, tagFilter) {
+    val visible = remember(projects, query, filter, sort, sortAsc, tagFilter) {
         val q = query.trim()
         projects
             .filter { p ->
@@ -116,11 +118,13 @@ fun ProjectListScreen(
                     p.name.contains(q, true) || p.author.contains(q, true))
             }
             .let { list ->
-                when (sort) {
-                    ProjectSort.Recent -> list.sortedByDescending { it.lastOpenedAt }
+                // 先按当前维度升序排，再按 sortAsc 决定要不要翻过来 —— 三个维度共用一套逻辑
+                val ascending = when (sort) {
+                    ProjectSort.Recent -> list.sortedBy { it.lastOpenedAt }
                     ProjectSort.Name -> list.sortedBy { it.name.lowercase() }
-                    ProjectSort.Created -> list.sortedByDescending { it.createdAt }
+                    ProjectSort.Created -> list.sortedBy { it.createdAt }
                 }
+                if (sortAsc) ascending else ascending.reversed()
             }
     }
 
@@ -233,7 +237,30 @@ fun ProjectListScreen(
                                         else MaterialTheme.colorScheme.onBackground
                                     )
                                 },
-                                onClick = { sort = option; sortMenu = false },
+                                onClick = {
+                                    // 换维度时回到该维度的自然方向：名称 A→Z，时间新的在上
+                                    sortAsc = option == ProjectSort.Name
+                                    sort = option
+                                },
+                            )
+                        }
+                        Text(
+                            "顺序",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 14.dp, top = 8.dp, bottom = 4.dp)
+                        )
+                        listOf(true to "↑ 升序", false to "↓ 降序").forEach { (asc, label) ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        (if (sortAsc == asc) "✓ " else "   ") + label,
+                                        fontSize = 12.sp,
+                                        color = if (sortAsc == asc) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onBackground
+                                    )
+                                },
+                                onClick = { sortAsc = asc },
                             )
                         }
                     }
