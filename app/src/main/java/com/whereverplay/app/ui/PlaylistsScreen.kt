@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,7 +34,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -79,6 +77,9 @@ import kotlin.math.roundToInt
 fun PlaylistsScreen(
     playlists: List<Playlist>,
     projects: Map<String, Project>,
+    /** 列表滚动位置 / 多选选中集合由 AppRoot 持有：进出播放、编辑后不丢 */
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    selection: androidx.compose.runtime.snapshots.SnapshotStateList<String>,
     onCreate: (String) -> Unit,
     onImport: () -> Unit,
     onPlay: (Playlist) -> Unit,
@@ -91,9 +92,7 @@ fun PlaylistsScreen(
     var plusMenu by remember { mutableStateOf(false) }
     // 单个删除的确认弹窗（批量删除在顶部操作条里，那条原本就直接删）
     var pendingDelete by remember { mutableStateOf<Playlist?>(null) }
-    val selection = remember { mutableStateListOf<String>() }
     val selecting = selection.isNotEmpty()
-    val listState = rememberLazyListState()
 
     androidx.activity.compose.BackHandler(enabled = selecting) { selection.clear() }
 

@@ -2,6 +2,7 @@ package com.whereverplay.app.data
 
 import android.content.Context
 import android.net.Uri
+import com.whereverplay.app.domain.BeatInfo
 import com.whereverplay.app.domain.Mark
 import com.whereverplay.app.domain.Playlist
 import com.whereverplay.app.domain.PlaylistRepository
@@ -120,7 +121,9 @@ object WplayIO {
                         .put("name", playlist.name)
                         .put("advanceMode", playlist.advanceMode)
                         .put("gapMs", playlist.gapMs)
-                        .put("projectIds", JSONArray(keptIds)),
+                        .put("projectIds", JSONArray(keptIds))
+                        // 0.2.2：手动翻谱偏好（三态），设过才写
+                        .also { o -> playlist.manualTurn?.let { o.put("manualTurn", it) } },
                 )
                 .put("projects", arr)
             zip.putNextEntry(ZipEntry(MANIFEST))
@@ -171,6 +174,14 @@ object WplayIO {
             .put("audio", audio ?: "")
             .put("pdf", pdf ?: "")
             .put("cover", cover ?: "")
+            // 0.2.1 新增（可选键）：BPM 存 ×10 整数、第一拍存毫秒。
+            // 只写设过的字段 → 老 App 读到新文件会忽略这两个键，不会因为 manifest.version 没变而报错。
+            .apply {
+                BeatInfo.sanitizeBpm(p.bpm)?.let { put("bpmX10", BeatInfo.toStoredTenths(it)) }
+                BeatInfo.sanitizeFirstBeat(p.firstBeatMs)?.let { put("firstBeatMs", it) }
+                // 0.2.2 新增（可选键）：手动翻谱偏好，null 不写
+                p.manualTurn?.let { put("manualTurn", it) }
+            }
             .put(
                 "marks", JSONArray().apply {
                     p.marks.forEach { m ->
@@ -247,7 +258,8 @@ object WplayIO {
             return target.name
         }
 
-        val audio = extract(obj.optString("audio"), "audio") ?: error("打包文件里缺少音频")
+        // 0.3.0：音频可选 —— 无音频项目导出的包里没有音频条目，字段写成空串
+        val audio = extract(obj.optString("audio"), "audio")
         val pdf = extract(obj.optString("pdf"), "pdf") ?: error("打包文件里缺少谱面")
         val cover = extract(obj.optString("cover"), "cover")
 
@@ -271,12 +283,23 @@ object WplayIO {
             pdfFile = pdf,
             coverFile = cover,
             pageCount = obj.optInt("pageCount", 1).coerceAtLeast(1),
-            durationMs = obj.optLong("durationMs", 0L),
+            // 0.3.0：音频可缺省 → 时长为 0 的包按默认 12 分钟时间轴处理，不再是坏数据
+            durationMs = obj.optLong("durationMs", 0L).takeIf { it > 0L } ?: Project.DEFAULT_DURATION_MS,
             marks = marks,
             isFavorite = obj.optBoolean("isFavorite", false),
             tag = obj.optString("tag", "").takeIf { it.isNotBlank() },
             createdAt = obj.optLong("createdAt", now),
             lastOpenedAt = now,
+            // 导入算一次「修改」（用户确认）：新导入的项目在「最近修改」里排最前。
+            // updatedAt 是设备本地属性，不写进 .wplay。
+            updatedAt = now,
+            // 0.2.1：老 .wplay 没有这两个键 → null，不报错也不用迁移
+            bpm = BeatInfo.fromStoredTenths(obj.optInt("bpmX10", 0)),
+            firstBeatMs = if (obj.has("firstBeatMs")) {
+                BeatInfo.sanitizeFirstBeat(obj.optLong("firstBeatMs", 0L))
+            } else null,
+            // 0.2.2：老 .wplay 没有这个键 → null（跟随全局默认）
+            manualTurn = if (obj.has("manualTurn")) obj.optBoolean("manualTurn", false) else null,
         )
     }
 
@@ -322,6 +345,8 @@ object WplayIO {
                 coverFile = null,
                 createdAt = now,
                 lastOpenedAt = now,
+                // 0.2.2：老 .wplist 没有这个键 → null（跟随全局默认）
+                manualTurn = if (plObj.has("manualTurn")) plObj.optBoolean("manualTurn", false) else null,
             )
         )
         return ImportResult(projects = importedProjects, playlists = 1)

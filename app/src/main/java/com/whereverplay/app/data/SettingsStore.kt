@@ -31,10 +31,20 @@ class SettingsStore(context: Context) {
         get() = prefs.getBoolean(KEY_STATS, false)
         set(value) = prefs.edit().putBoolean(KEY_STATS, value).apply()
 
+    /**
+     * **手动翻谱**（清单 #23）：打开后忽略打点，页码只跟手指走。
+     * 记忆到下次进播放页 —— 排练时可能就是整场都要自己翻，每次重开都得再点一遍太烦。
+     * 打点页（MarkingScreen）不受影响，它本来就不看这个开关。
+     */
+    var manualTurn: Boolean
+        get() = prefs.getBoolean(KEY_MANUAL_TURN, false)
+        set(value) = prefs.edit().putBoolean(KEY_MANUAL_TURN, value).apply()
+
     private companion object {
         const val KEY_OFFSET = "page_turn_offset_ms"
         const val KEY_KEEP_ON = "keep_screen_on"
         const val KEY_ANIM = "page_turn_animation"
         const val KEY_STATS = "show_debug_stats"
+        const val KEY_MANUAL_TURN = "manual_turn"
     }
 }

@@ -21,9 +21,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -34,10 +34,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -52,16 +52,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.whereverplay.app.domain.Playlist
 import com.whereverplay.app.domain.Project
 import java.io.File
 
 enum class ProjectSort(val label: String) {
     Recent("最近修改"),
     Name("名称"),
-    Created("创建时间"),
 }
 
-private enum class ProjectFilter { All, Favorite }
+// 去掉 private：HomeScreen / AppRoot 要持有这个状态（视图状态提升后跨文件传递）
+enum class ProjectFilter { All, Favorite }
 
 /**
  * WP: 项目列表（首页 tab 0）。
@@ -76,6 +77,21 @@ private enum class ProjectFilter { All, Favorite }
 fun ProjectListScreen(
     projects: List<Project>,
     tags: List<String>,
+    // 视图状态由 AppRoot 持有（见 AppRoot 的注释）：点进项目路由切走再回来，这些不能丢
+    query: String,
+    filter: ProjectFilter,
+    tagFilter: String?,
+    sort: ProjectSort,
+    sortAsc: Boolean,
+    onQueryChange: (String) -> Unit,
+    onFilterChange: (ProjectFilter) -> Unit,
+    onTagFilterChange: (String?) -> Unit,
+    onSortChange: (ProjectSort) -> Unit,
+    onSortAscChange: (Boolean) -> Unit,
+    /** 网格滚动位置由 AppRoot 持有：点进项目回来不再回到顶部 */
+    gridState: LazyGridState,
+    /** 多选选中集合同样提升，进出详情后选中不丢 */
+    selection: SnapshotStateList<String>,
     onOpen: (Project) -> Unit,
     onToggleFavorite: (Project) -> Unit,
     onCreate: () -> Unit,
@@ -83,23 +99,20 @@ fun ProjectListScreen(
     onBatchDelete: (List<Project>) -> Unit,
     onBatchFavorite: (List<Project>) -> Unit,
     onBatchExport: (List<Project>) -> Unit,
+    /** 多选批量加入播放列表（清单 #21）：追加到已有列表 / 现建一个，去重与 toast 都在 AppRoot 里做 */
+    playlists: List<Playlist>,
+    onBatchAppendToPlaylist: (Playlist, List<Project>) -> Unit,
+    onBatchCreatePlaylist: (String, List<Project>) -> Unit,
     onShowDetail: (Project) -> Unit,
     onEdit: (Project) -> Unit,
     onExport: (Project) -> Unit,
     onDelete: (Project) -> Unit,
 ) {
-    var query by remember { mutableStateOf("") }
-    var filter by remember { mutableStateOf(ProjectFilter.All) }
-    var sort by remember { mutableStateOf(ProjectSort.Recent) }
-    // 升降序：false = 降序。默认「最近修改 / 创建时间」用降序（新的在上），「名称」用升序（A→Z）
-    var sortAsc by remember { mutableStateOf(false) }
     var sortMenu by remember { mutableStateOf(false) }
     var filterMenu by remember { mutableStateOf(false) }
     var plusMenu by remember { mutableStateOf(false) }
-    var tagFilter by remember { mutableStateOf<String?>(null) }
-    val selection = remember { mutableStateListOf<String>() }
+    var addToPlaylist by remember { mutableStateOf(false) }
     val selecting = selection.isNotEmpty()
-    val gridState = rememberLazyGridState()
 
     // 筛选菜单只列「真的有项目在用」的标签 —— 20 个标签全列出来菜单会长到点不动
     val usedTags = remember(projects) {
@@ -108,6 +121,20 @@ fun ProjectListScreen(
 
     // 多选状态下按返回 = 退出选择，而不是退出到桌面
     androidx.activity.compose.BackHandler(enabled = selecting) { selection.clear() }
+
+    /**
+     * 排序变化后**同步**把位置归零（0.2.2 修「闪一下」）。
+     *
+     * 之前是 `scope.launch { 等两帧; scrollToItem(0,0) }`：等的那两帧里，列表内容已经
+     * 按新顺序重排、而滚动位置还停在旧索引上 —— 如果用户不在顶部，就会先渲染出「列表中间
+     * 那一段」，下一帧才被拉回顶部，观感是「闪到底部再闪回顶部」。
+     *
+     * `requestScrollToItem` 不挂起、直接写进 state，和「改排序」在同一次快照里生效，
+     * 于是新内容第一帧就量在顶部，中间没有任何错位的帧。
+     */
+    fun resetScrollToTop() {
+        gridState.requestScrollToItem(0, 0)
+    }
 
     val visible = remember(projects, query, filter, sort, sortAsc, tagFilter) {
         val q = query.trim()
@@ -122,11 +149,11 @@ fun ProjectListScreen(
                     p.name.contains(q, true) || p.author.contains(q, true))
             }
             .let { list ->
-                // 先按当前维度升序排，再按 sortAsc 决定要不要翻过来 —— 三个维度共用一套逻辑
+                // 先按当前维度升序排，再按 sortAsc 决定要不要翻过来 —— 两个维度共用一套逻辑。
+                // 「最近修改」的键是 updatedAt：只有项目内容真的被改过才刷新（点进去看/播放不算）。
                 val ascending = when (sort) {
-                    ProjectSort.Recent -> list.sortedBy { it.lastOpenedAt }
+                    ProjectSort.Recent -> list.sortedBy { it.updatedAt }
                     ProjectSort.Name -> list.sortedBy { it.name.lowercase() }
-                    ProjectSort.Created -> list.sortedBy { it.createdAt }
                 }
                 if (sortAsc) ascending else ascending.reversed()
             }
@@ -135,25 +162,32 @@ fun ProjectListScreen(
     Column(Modifier.fillMaxSize()) {
         // ---------- 顶栏 ----------
         if (selecting) {
+            // 2026-10-26：多选条要放下「收藏 / 导出 / 加入列表 / 删除」四个动作，
+            // 原来的 TextButton（最小宽 58dp）在 360dp 屏上会挤出去，改成紧凑文字动作，
+            // 「取消」则从文字按钮挪到左侧 ✕（图标 44 热区，比文字按钮省一半宽度）。
             Row(
-                Modifier.fillMaxWidth().padding(start = 18.dp, end = 6.dp, top = 10.dp, bottom = 8.dp),
+                Modifier.fillMaxWidth().padding(start = 4.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("已选 ${selection.size}", fontSize = 18.sp, fontWeight = FontWeight.Medium)
+                WpIconButton(onClick = { selection.clear() }, visual = 0.dp) { tint ->
+                    IconClose(tint, 16.dp)
+                }
+                Text("已选 ${selection.size}", fontSize = 16.sp, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.weight(1f))
-                TextButton(onClick = {
+                BarAction("收藏") {
                     onBatchFavorite(visible.filter { it.id in selection })
                     selection.clear()
-                }) { Text("收藏", fontSize = 12.sp) }
-                TextButton(onClick = {
+                }
+                BarAction("导出") {
                     onBatchExport(visible.filter { it.id in selection })
                     selection.clear()
-                }) { Text("导出", fontSize = 12.sp) }
-                TextButton(onClick = {
+                }
+                // 加入列表：取全部选中项（不只当前筛选得到的 visible），否则筛着就漏
+                BarAction("加入列表") { addToPlaylist = true }
+                BarAction("删除", danger = true) {
                     onBatchDelete(visible.filter { it.id in selection })
                     selection.clear()
-                }) { Text("删除", fontSize = 12.sp, color = Color(0xFFFF8A80)) }
-                TextButton(onClick = { selection.clear() }) { Text("取消", fontSize = 12.sp) }
+                }
             }
         } else {
             // 标题撑满把动作推到右侧：筛选 44 + 排序 44 + 新建胶囊
@@ -190,7 +224,7 @@ fun ProjectListScreen(
                                     else MaterialTheme.colorScheme.onBackground
                                 )
                             },
-                            onClick = { tagFilter = null; filterMenu = false },
+                            onClick = { onTagFilterChange(null); filterMenu = false },
                         )
                         if (usedTags.isEmpty()) {
                             Text(
@@ -212,7 +246,7 @@ fun ProjectListScreen(
                                         else MaterialTheme.colorScheme.onBackground
                                     )
                                 },
-                                onClick = { tagFilter = tag; filterMenu = false },
+                                onClick = { onTagFilterChange(tag); filterMenu = false },
                             )
                         }
                     }
@@ -246,9 +280,10 @@ fun ProjectListScreen(
                                     )
                                 },
                                 onClick = {
-                                    // 换维度时回到该维度的自然方向：名称 A→Z，时间新的在上
-                                    sortAsc = option == ProjectSort.Name
-                                    sort = option
+                                    // 换维度 / 翻转升降序：先把位置归零，再改排序（同一次快照，不闪）
+                                    resetScrollToTop()
+                                    onSortAscChange(option == ProjectSort.Name)
+                                    onSortChange(option)
                                 },
                             )
                         }
@@ -269,7 +304,12 @@ fun ProjectListScreen(
                                         else MaterialTheme.colorScheme.onBackground
                                     )
                                 },
-                                onClick = { sortAsc = asc },
+                                onClick = {
+                                    // 升降序翻转：整段倒过来，一律回顶部（用户明确要求）。
+                                    // 别再「锚住当前卡片」—— 翻转后那一行在列表另一头，观感就是从顶上被甩下去。
+                                    resetScrollToTop()
+                                    onSortAscChange(asc)
+                                },
                             )
                         }
                     }
@@ -311,7 +351,7 @@ fun ProjectListScreen(
                 Spacer(Modifier.width(8.dp))
                 BasicTextField(
                     value = query,
-                    onValueChange = { query = it },
+                    onValueChange = { onQueryChange(it) },
                     singleLine = true,
                     textStyle = TextStyle(color = MaterialTheme.colorScheme.onBackground, fontSize = 13.sp),
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
@@ -335,14 +375,14 @@ fun ProjectListScreen(
             Modifier.fillMaxWidth().padding(horizontal = 18.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            WpChip("全部", { filter = ProjectFilter.All }, selected = filter == ProjectFilter.All, height = 28.dp)
+            WpChip("全部", { onFilterChange(ProjectFilter.All) }, selected = filter == ProjectFilter.All, height = 28.dp)
             Spacer(Modifier.width(8.dp))
-            WpChip("收藏", { filter = ProjectFilter.Favorite }, selected = filter == ProjectFilter.Favorite, height = 28.dp)
+            WpChip("收藏", { onFilterChange(ProjectFilter.Favorite) }, selected = filter == ProjectFilter.Favorite, height = 28.dp)
             tagFilter?.let { tag ->
                 Spacer(Modifier.width(8.dp))
                 WpChip(
                     text = "$tag  ✕",
-                    onClick = { tagFilter = null },
+                    onClick = { onTagFilterChange(null) },
                     selected = true,
                     height = 28.dp,
                 )
@@ -433,6 +473,45 @@ fun ProjectListScreen(
                 modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(),
             )
         }
+    }
+
+    // ---------- 多选 → 加入播放列表（#21） ----------
+    if (addToPlaylist) {
+        val chosen = projects.filter { it.id in selection }
+        AddToPlaylistDialog(
+            selected = chosen,
+            playlists = playlists,
+            onAppend = { playlist ->
+                addToPlaylist = false
+                selection.clear()
+                onBatchAppendToPlaylist(playlist, chosen)
+            },
+            onCreate = { name ->
+                addToPlaylist = false
+                selection.clear()
+                onBatchCreatePlaylist(name, chosen)
+            },
+            onDismiss = { addToPlaylist = false },
+        )
+    }
+}
+
+/** 多选条上的紧凑文字动作：44dp 热区、12sp、左右 7dp，四个并排也能塞进 360dp 屏 */
+@Composable
+private fun BarAction(text: String, danger: Boolean = false, onClick: () -> Unit) {
+    WpTapArea(
+        onClick = onClick,
+        modifier = Modifier.height(44.dp),
+        rippleShape = wpRippleShape(10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = if (danger) Color(0xFFFF8A80) else MaterialTheme.colorScheme.onBackground,
+            modifier = Modifier.padding(horizontal = 7.dp),
+        )
     }
 }
 

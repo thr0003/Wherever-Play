@@ -34,6 +34,28 @@ class PdfPageRenderer(file: File) : Closeable {
 
     val pageCount: Int = renderer.pageCount
 
+    /**
+     * 第 1 页的宽高比（width / height）。
+     *
+     * 播放页靠它「按可用高度反推渲染宽度」（清单 #22）：A4 竖版约 0.707，
+     * 双页跨页（landscape）约 1.414，两者要的宽度差一倍，写死任何一个都不对。
+     * 读不到就退回 A4 竖版的比例（宁可窄一点，也别渲染一张用不上的大图）。
+     */
+    val pageAspect: Float = run {
+        var raw: Float? = null
+        val page = runCatching { renderer.openPage(0) }.getOrNull()
+        if (page != null) {
+            try {
+                if (page.height > 0) raw = page.width.toFloat() / page.height.toFloat()
+            } catch (_: Throwable) {
+                raw = null
+            } finally {
+                runCatching { page.close() }
+            }
+        }
+        raw?.takeIf { it in 0.1f..10f } ?: 0.707f
+    }
+
     private val cache = object : LruCache<Int, Bitmap>(MAX_CACHE_BYTES) {
         override fun sizeOf(key: Int, value: Bitmap): Int = value.byteCount
     }
@@ -108,6 +130,27 @@ class PdfPageRenderer(file: File) : Closeable {
         private val MAX_CACHE_BYTES: Int = run {
             val mb = if (android.os.Build.VERSION.SDK_INT >= 26) 48 else 20
             mb * 1024 * 1024
+        }
+
+        /**
+         * **单页位图的字节预算**（清单 #22）。
+         *
+         * 谱面改成「按可用高度反推宽度」后，一页比以前宽 20%~30%，字节数按平方涨：
+         * 1080p 竖屏、A4 谱面从 1080px 宽（≈9.2MB）涨到 ≈1360px（≈12.5MB）。
+         * 播放页同时要「上一页 / 当前页 / 下一页」三张，所以一页必须留出
+         * 48MB ÷ 3 ≈ 16MB 以内 —— 这里取 12MB，给预渲染和曲间遮罩底图留余量。
+         *
+         * 超预算时**降宽而不是降色深**（PdfRenderer 只接受 ARGB_8888，见类注释）。
+         */
+        const val PAGE_BYTES_BUDGET: Int = 12 * 1024 * 1024
+
+        /**
+         * 按页面宽高比算出「不超过 [PAGE_BYTES_BUDGET]」的最大渲染宽度（像素）。
+         * 一页字节数 = w × h × 4，而 h = w / aspect，所以 w = √(budget × aspect / 4)。
+         */
+        fun maxWidthForBudget(aspect: Float): Int {
+            val a = aspect.coerceIn(0.1f, 10f)
+            return kotlin.math.sqrt(PAGE_BYTES_BUDGET.toDouble() * a / 4.0).toInt().coerceAtLeast(64)
         }
 
         /** 只读取页数，用于创建项目时校验（会立刻释放句柄） */

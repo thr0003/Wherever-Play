@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
@@ -18,6 +19,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -37,6 +42,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -61,6 +67,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -108,6 +115,15 @@ fun PlaybackScreen(
     /** 非空 = 播完自动接下一首（间隔毫秒）；空 = 播完暂停等用户点 */
     autoAdvanceMs: Long?,
     settings: SettingsStore,
+    /**
+     * 0.2.2 手动翻谱：当前**作用域**（播放列表 / 单个项目）里存的值。
+     * null = 这个列表/项目还没单独设置过 → 回退到设置页的全局默认。
+     */
+    manualTurnSetting: Boolean?,
+    /** 作用域标识：列表播放 = 列表 id，单曲播放 = `project:<id>`。换歌时不重置手动模式靠它 */
+    manualScopeKey: String,
+    /** 用户在播放页左下角拨了开关 → 交给 AppRoot 落到列表或项目上 */
+    onManualTurnChange: (Boolean) -> Unit,
     onExit: () -> Unit,
     onRematch: () -> Unit,
 ) {
@@ -129,7 +145,11 @@ fun PlaybackScreen(
     var countdownMs by remember { mutableStateOf(0L) }
 
     val context = LocalContext.current
-    val audioFile = remember(project.id) { File(File(context.filesDir, "media"), project.audioFile) }
+    // 0.3.0：音频可空。没有音频时播放页 = 谱面 + 静音时间轴（不初始化 MediaPlayer）
+    val audioFile = remember(project.id) {
+        project.audioFile?.let { File(File(context.filesDir, "media"), it) }
+    }
+    val hasAudio = audioFile != null
     val pdfFile = remember(project.id) { File(File(context.filesDir, "media"), project.pdfFile) }
 
     val player = remember(project.id) { MediaPlayerAudioPlayer() }
@@ -144,8 +164,10 @@ fun PlaybackScreen(
     // 切歌时把**共用的单线程渲染池**一起 close 了，导致新曲的渲染任务永远提交不进去，
     // 界面卡在「正在渲染第 1 页」。这也是为什么遮罩底图能渲染（那时还没切歌）而进去就空白。
     DisposableEffect(project.id) {
-        player.load(audioFile.absolutePath)
-        playerDuration = player.durationMs
+        audioFile?.let {
+            player.load(it.absolutePath)
+            playerDuration = player.durationMs
+        }
         onDispose { player.release() }
     }
     DisposableEffect(pdfRenderer) {
@@ -163,6 +185,28 @@ fun PlaybackScreen(
     var controlsVisible by remember { mutableStateOf(true) }
     var menuOpen by remember { mutableStateOf(false) }
     var manualPage by remember { mutableStateOf<Int?>(null) }
+
+    // ---------- #23 手动翻谱（0.2.2 重做）----------
+    /**
+     * 打开后完全忽略打点，页码只由手指（滑 / 双击）决定。
+     *
+     * 作用域：单曲播放 = 这个项目；播放列表播放 = **整个列表**（所以 key 用 [manualScopeKey]，
+     * 列表里换歌不会把手动模式重置掉）。作用域没设置过就跟随设置页的全局默认。
+     */
+    var manualMode by remember(manualScopeKey) {
+        mutableStateOf(manualTurnSetting ?: settings.manualTurn)
+    }
+    /**
+     * 手动模式下唯一的页码来源。切进手动模式时对齐当前页 —— 否则一开开关就会跳页。
+     * 换曲时重置（见 LaunchedEffect(index)）。
+     */
+    var manualHoldPage by remember(project.id) { mutableStateOf(1) }
+
+    // ---------- #24 谱面缩放 ----------
+    /** 1f = 原尺寸。> 1 时单指改为平移、翻页手势整组关闭（否则两套手势必然打架） */
+    var zoom by remember(project.id) { mutableStateOf(1f) }
+    var panX by remember(project.id) { mutableStateOf(0f) }
+    var panY by remember(project.id) { mutableStateOf(0f) }
 
     // 翻页偏移（像素）：手指拖动量 / 动画中的量，二选一
     var dragOffset by remember { mutableStateOf(0f) }
@@ -211,6 +255,11 @@ fun PlaybackScreen(
         switching = false
         position = 0L
         manualPage = null
+        // 换曲把手工状态一起清掉：新的一首从第 1 页、1:1 开始（#23 / #24）
+        manualHoldPage = 1
+        zoom = 1f
+        panX = 0f
+        panY = 0f
         if (pendingAutoPlay) {
             pendingAutoPlay = false
             player.seekTo(0L)
@@ -228,22 +277,36 @@ fun PlaybackScreen(
     val playerNow = rememberUpdatedState(player)
     val durationNow = rememberUpdatedState(safeDuration)
     LaunchedEffect(isPlaying, project.id) {
-        while (isPlaying) {
-            val p = playerNow.value
-            if (!scrubbing) position = p.positionMs.coerceAtMost(durationNow.value)
-            if (!p.isPlaying && !scrubbing && !switching) {
-                isPlaying = false
-                position = durationNow.value
-                if (index < queue.lastIndex && pendingNextIndex == null) {
-                    if (autoAdvanceMs != null && autoAdvanceMs <= 0L) {
-                        // 间隔 0 秒：不停留，直接进下一首
-                        countdownMs = 0L
-                        switchTo(index + 1, autoPlay = true)
-                    } else {
-                        countdownMs = autoAdvanceMs ?: -1L
-                        pendingNextIndex = index + 1
-                    }
+        // 一首播完的统一出口：有音频靠播放器状态、无音频靠时钟走满，两条路都走这里
+        fun finishTrack() {
+            isPlaying = false
+            position = durationNow.value
+            if (index < queue.lastIndex && pendingNextIndex == null) {
+                if (autoAdvanceMs != null && autoAdvanceMs <= 0L) {
+                    // 间隔 0 秒：不停留，直接进下一首
+                    countdownMs = 0L
+                    switchTo(index + 1, autoPlay = true)
+                } else {
+                    countdownMs = autoAdvanceMs ?: -1L
+                    pendingNextIndex = index + 1
                 }
+            }
+        }
+        var lastTick = android.os.SystemClock.elapsedRealtime()
+        while (isPlaying) {
+            if (hasAudio) {
+                val p = playerNow.value
+                if (!scrubbing) position = p.positionMs.coerceAtMost(durationNow.value)
+                if (!p.isPlaying && !scrubbing && !switching) finishTrack()
+            } else {
+                // 0.3.0 无音频：没有播放器可读，按真实流逝时间推进 —— 「静音时间轴」。
+                // 打点照旧生效，所以这仍然是一个能自动翻谱的播放态。
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (!scrubbing) {
+                    position = (position + (now - lastTick)).coerceAtMost(durationNow.value)
+                }
+                lastTick = now
+                if (position >= durationNow.value && !scrubbing) finishTrack()
             }
             delay(16)
         }
@@ -254,13 +317,65 @@ fun PlaybackScreen(
     // 拖进度条时冻结自动翻页：否则「拖一下就翻走」，页面在手指下面乱闪
     var frozenPage by remember { mutableStateOf<Int?>(null) }
     val computedPage = PageResolver.pageAt(project.marks, effective)
-    val autoPage = frozenPage ?: computedPage
+    // #23 手动翻谱：整条打点链路短路 —— 既不跟播放位置，也不管拖动进度条时的冻结页
+    val autoPage = if (manualMode) manualHoldPage else (frozenPage ?: computedPage)
 
     LaunchedEffect(autoPage) { manualPage = null }
     val displayPage = (manualPage ?: autoPage).coerceIn(1, project.pageCount.coerceAtLeast(1))
 
+    /**
+     * 拨「手动翻谱」开关（0.2.2：开关在控制行左下角）。
+     * 切进来时把页码锚在屏上那一页 —— 否则一开开关就会跳回打点算出来的页。
+     * 结果立刻落到作用域（项目或播放列表）里，下次进这个项目/列表还保持。
+     */
+    fun toggleManualTurn() {
+        val next = !manualMode
+        manualMode = next
+        manualPage = null
+        if (next) manualHoldPage = displayPage
+        onManualTurnChange(next)
+    }
+
+    /**
+     * 手动翻到某一页（#23 / #24 共用）。
+     * 同时写 [manualPage]（当前显示）与 [manualHoldPage]（手动模式下的锚点）：
+     * 两者不一致的话，双击/换曲清掉 manualPage 会立刻跳回旧页。
+     */
+    fun goToPage(target: Int) {
+        val p = target.coerceIn(1, project.pageCount.coerceAtLeast(1))
+        manualPage = p
+        manualHoldPage = p
+    }
+
+    /** #24 双击回正（带一点动画，直接跳回去会显得很生硬） */    fun resetZoom() {
+        if (zoom <= 1.001f && panX == 0f && panY == 0f) return
+        val z0 = zoom
+        val x0 = panX
+        val y0 = panY
+        scope.launch {
+            try {
+                animate(0f, 1f, animationSpec = tween(WpMotion.TURN_BACK_MS, easing = WpMotion.TurnEasing)) { t, _ ->
+                    zoom = z0 + (1f - z0) * t
+                    panX = x0 * (1f - t)
+                    panY = y0 * (1f - t)
+                }
+            } finally {
+                zoom = 1f
+                panX = 0f
+                panY = 0f
+            }
+        }
+    }
+
     val density = LocalDensity.current
-    val targetWidthPx = rememberPageRenderWidth()
+    // #22：谱面按「整屏可用区域」反推渲染宽度 —— 控制栏隐藏时谱面本来就铺满整屏，
+    // 按整屏算才不会出现「放大到全屏后糊一层」。字节预算在 rememberPageRenderWidth 里封顶。
+    val screenConfig = LocalConfiguration.current
+    val targetWidthPx = rememberPageRenderWidth(
+        aspect = pdfRenderer?.pageAspect ?: 0.707f,
+        availWidthPx = with(density) { screenConfig.screenWidthDp.dp.roundToPx() },
+        availHeightPx = with(density) { screenConfig.screenHeightDp.dp.roundToPx() },
+    )
     val barRisePx = with(density) { WpMotion.BAR_RISE_DP.dp.roundToPx() }
 
     // 当前页渲染 + 邻居页预渲染
@@ -403,11 +518,12 @@ fun PlaybackScreen(
         } else {
             if (position >= safeDuration - 50) {
                 position = 0L
-                player.seekTo(0L)
-            } else {
+                if (hasAudio) player.seekTo(0L)
+            } else if (hasAudio) {
                 player.seekTo(position)
             }
-            player.play()
+            // 无音频时 player 是空的：play() 什么都不做，进度由静音时钟推
+            if (hasAudio) player.play()
             isPlaying = true
         }
     }
@@ -427,17 +543,32 @@ fun PlaybackScreen(
         val pageOffset = if (animating) animOffset * widthPx else dragOffset
 
         // ---------- 谱面：三页并排，跟手位移 ----------
-        // 上下给固定留白（顶栏 56 / 控制区），而不是让谱面钻到控制栏底下：
-        // 谱面被压住的那十几 %，正好是排练记号、页码所在的位置。
-        // 留白仍是**常量**，不随控制栏显隐变化 —— 一变谱面就会在翻页时上下跳（坑 #3）。
-        // 2026-10-25：提前量组收进右上角菜单后，多曲与单曲共用同一个高度（原来多曲是 112）。
+        // #22 谱面尽量占满全屏：
+        //  - 控制栏显示时，谱面区 = 屏幕 − 顶栏 56 − 控制区 100（和以前一样，谱面不被压住，
+        //    排练记号/页码不会被挡 —— 这是当初特意留白的原因）；
+        //  - 点一下隐藏控制栏后，谱面区**动画长到整屏**，得到真正的全屏谱面。
+        // 留白现在是个动画量，但它只跟「控制栏显隐」走，翻页期间纹丝不动，
+        // 所以坑 #3 的「翻页时谱面上下跳」不会复现（那一版是把留白跟翻页绑在一起变）。
         val controlBarHeight = 100.dp
+        val topInset by animateDpAsState(
+            if (controlsVisible) 56.dp else 0.dp,
+            animationSpec = tween(WpMotion.BAR_MS, easing = WpMotion.BarEasing),
+            label = "pageTopInset",
+        )
+        val bottomInset by animateDpAsState(
+            if (controlsVisible) controlBarHeight else 0.dp,
+            animationSpec = tween(WpMotion.BAR_MS, easing = WpMotion.BarEasing),
+            label = "pageBottomInset",
+        )
+        val zoomed = zoom > 1.001f
         Box(
             Modifier
                 .fillMaxSize()
-                .padding(top = 56.dp, bottom = controlBarHeight)
+                .padding(top = topInset, bottom = bottomInset)
                 .clipToBounds()
-                .pointerInput(widthPx, displayPage) {
+                .pointerInput(widthPx, displayPage, zoomed) {
+                    // #24 放大之后单指改成平移，翻页手势整组让位 —— 同一根手指只能有一种含义
+                    if (zoomed) return@pointerInput
                     detectHorizontalDragGestures(
                         onDragStart = {
                             clearPageOffset()
@@ -473,7 +604,8 @@ fun PlaybackScreen(
                                     if (direction != 0) {
                                         // 翻页完成后 dragOffset 直接归零，不接第二段动画（否则会看到「翻两下」）
                                         skipAutoAnim = true
-                                        manualPage = (displayPage + direction).coerceIn(1, project.pageCount)
+                                        // 手动翻谱模式下这个页码就是「锚点」，必须一起写（#23）
+                                        goToPage(displayPage + direction)
                                     }
                                 } finally {
                                     // 被打断（离场 / 又被拖了一下）也必须归位
@@ -491,28 +623,100 @@ fun PlaybackScreen(
                         if (abs(dragOffset) > abs(dragPeak)) dragPeak = dragOffset
                     }
                 }
+                // 放大状态下的单指平移（翻页手势此时已被上面那个 return 关掉）
+                .pointerInput(zoomed) {
+                    if (!zoomed) return@pointerInput
+                    detectDragGestures { change, drag ->
+                        change.consume()
+                        val (nx, ny) = clampPan(
+                            x = panX + drag.x,
+                            y = panY + drag.y,
+                            zoom = zoom,
+                            contentW = size.width.toFloat(),
+                            contentH = size.height.toFloat(),
+                        )
+                        panX = nx
+                        panY = ny
+                    }
+                }
+                // #24 双指缩放 + 平移：真的落下第二根手指才接管，单指手势完全不受影响
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        var twoFinger = false
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val pressed = event.changes.count { it.pressed }
+                            if (pressed >= 2 && !twoFinger) {
+                                twoFinger = true
+                                // 第二根手指落下的瞬间，单指翻页可能已经拖出一点位移，清掉
+                                clearPageOffset()
+                            }
+                            if (twoFinger && pressed >= 1) {
+                                val zoomChange = event.calculateZoom()
+                                val panChange = event.calculatePan()
+                                val centroid = event.calculateCentroid(useCurrent = true)
+                                if (zoomChange != 1f || panChange != Offset.Zero) {
+                                    val old = zoom
+                                    val next = (old * zoomChange).coerceIn(1f, 4f)
+                                    val k = next / old
+                                    // 以捏合中心为锚点：手指下面那一段谱面缩放前后停在原地
+                                    val nx = k * panX + (1f - k) * (centroid.x - size.width / 2f) + panChange.x
+                                    val ny = k * panY + (1f - k) * (centroid.y - size.height / 2f) + panChange.y
+                                    zoom = next
+                                    val (cx, cy) = clampPan(
+                                        x = nx,
+                                        y = ny,
+                                        zoom = next,
+                                        contentW = size.width.toFloat(),
+                                        contentH = size.height.toFloat(),
+                                    )
+                                    panX = cx
+                                    panY = cy
+                                }
+                                event.changes.forEach { it.consume() }
+                            }
+                            if (pressed == 0) break
+                        }
+                    }
+                }
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onTap = { controlsVisible = !controlsVisible },
-                        onDoubleTap = { manualPage = null },
+                        // 双击：放大状态回正，原尺寸时仍是「取消手动选中的页」
+                        onDoubleTap = { if (zoom > 1.001f) resetZoom() else manualPage = null },
                     )
                 }
         ) {
             val tick = renderTick // 读取以订阅重绘
-            for (rel in -1..1) {
-                val page = displayPage + rel
-                if (page < 1 || page > project.pageCount) continue
-                val bmp = pdfRenderer?.cached(page - 1)
-                if (bmp == null && rel != 0) continue
-                PdfPageView(
-                    bmp,
-                    Modifier
-                        .fillMaxSize()
-                        .graphicsLayer { translationX = pageOffset + rel * widthPx },
-                    emptyHint = if (rel == 0 && bmp == null) {
-                        DebugStats.renderError ?: "正在渲染第 $page 页…"
-                    } else null,
-                )
+            // #24 缩放/平移作用在「三页整体」这一层：
+            // 翻页位移仍写在内容坐标系里（每页 ±widthPx），放大后翻页距离自然跟着放大，
+            // 不会出现「放大到 3 倍翻页却只挪了三分之一屏」。
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        scaleX = zoom
+                        scaleY = zoom
+                        translationX = panX
+                        translationY = panY
+                    }
+            ) {
+                for (rel in -1..1) {
+                    val page = displayPage + rel
+                    if (page < 1 || page > project.pageCount) continue
+                    val bmp = pdfRenderer?.cached(page - 1)
+                    if (bmp == null && rel != 0) continue
+                    PdfPageView(
+                        bmp,
+                        Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { translationX = pageOffset + rel * widthPx },
+                        emptyHint = if (rel == 0 && bmp == null) {
+                            DebugStats.renderError ?: "正在渲染第 $page 页…"
+                        } else null,
+                    )
+                }
             }
         }
 
@@ -556,7 +760,10 @@ fun PlaybackScreen(
                         buildString {
                             if (multi) append("${index + 1} / ${queue.size} · ")
                             append("第 $displayPage 页 / ${project.pageCount} 页")
-                            if (manualPage != null) append(" · 手动")
+                            if (!hasAudio) append(" · 无音频")
+                            if (manualMode) append(" · 手动翻谱")
+                            else if (manualPage != null) append(" · 手动")
+                            if (zoom > 1.001f) append(" · ${"%.1f".format(zoom)}×")
                         },
                         fontSize = 9.sp,
                         color = Color(0xFF8A8A94)
@@ -694,8 +901,16 @@ fun PlaybackScreen(
                 // 「两个 44 热区 + 56 播放键 + 提前量组 124」必然压到播放键。
                 // 现在整组收进右上角「⋮」菜单，这一行只剩播放控制本身，
                 // 单曲（只有播放键居中）和多曲（上/下一首对称分居两侧）用同一套布局。
-                if (multi) {
-                    Box(Modifier.fillMaxWidth().height(56.dp)) {
+                //
+                // 0.2.2：手动翻谱开关放在**左下角**（用户指定）。中间那组是居中的，
+                // 左边到 92dp 都是空的，塞一个 60dp 宽的胶囊不会和播放键打架。
+                Box(Modifier.fillMaxWidth().height(56.dp)) {
+                    ManualTurnChip(
+                        manual = manualMode,
+                        onClick = { toggleManualTurn() },
+                        modifier = Modifier.align(Alignment.CenterStart),
+                    )
+                    if (multi) {
                         Row(
                             Modifier.align(Alignment.Center),
                             verticalAlignment = Alignment.CenterVertically,
@@ -714,10 +929,8 @@ fun PlaybackScreen(
                                 visual = 0.dp,
                             ) { tint -> IconSkipNext(tint, 20.dp) }
                         }
-                    }
-                } else {
-                    // 单曲：上/下一首整组不渲染，播放键居中
-                    Box(Modifier.fillMaxWidth().height(56.dp)) {
+                    } else {
+                        // 单曲：上/下一首整组不渲染，播放键居中
                         PlayPauseButton(
                             isPlaying,
                             modifier = Modifier.align(Alignment.Center),
@@ -796,6 +1009,64 @@ fun PlaybackScreen(
 
 private fun <T> List<T>.getOrNullOr(index: Int): T? =
     if (index in indices) this[index] else null
+
+/**
+ * 控制行左下角的「手动翻谱」开关（0.2.2）。
+ *
+ * 用胶囊而不是 Material Switch：这里空间只有 60dp 宽，Switch 光本体就 52dp，
+ * 再配文字必然压到居中的播放键。胶囊的选中态沿用工程里的约定 —— 底色 + 描边 + 强调色文字，
+ * 不打钩。热区 44dp（视觉 28dp），符合「视觉可小于 44、热区必须 ≥ 44」。
+ */
+@Composable
+private fun ManualTurnChip(
+    manual: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val shape = RoundedCornerShape(12.dp)
+    val accent = MaterialTheme.colorScheme.primary
+    WpTapArea(
+        onClick = onClick,
+        modifier = modifier.height(44.dp),
+        rippleShape = wpRippleShape(12.dp),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        Row(
+            Modifier
+                .height(28.dp)
+                .clip(shape)
+                .background(if (manual) Color(0x339EC5FF) else Glass.fill)
+                .border(0.5.dp, if (manual) accent else Glass.border, shape)
+                .padding(horizontal = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                if (manual) "手动翻谱" else "自动翻谱",
+                fontSize = 10.sp,
+                fontWeight = if (manual) FontWeight.Medium else FontWeight.Normal,
+                color = if (manual) accent else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/**
+ * #24：把平移量夹在「放大后多出来的那部分」以内 ——
+ * 2 倍放大时最多往左右各推半屏，再多就把谱面推出边界、露出一片黑。
+ * 缩回 1 倍时上限自动变 0，所以捏回原尺寸不需要另外清平移。
+ */
+private fun clampPan(
+    x: Float,
+    y: Float,
+    zoom: Float,
+    contentW: Float,
+    contentH: Float,
+): Pair<Float, Float> {
+    val maxX = (contentW * (zoom - 1f) / 2f).coerceAtLeast(0f)
+    val maxY = (contentH * (zoom - 1f) / 2f).coerceAtLeast(0f)
+    return x.coerceIn(-maxX, maxX) to y.coerceIn(-maxY, maxY)
+}
 
 /* ================= 进度条 ================= */
 

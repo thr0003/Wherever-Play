@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.whereverplay.app.data.FileSaver
 import com.whereverplay.app.data.MediaInstaller
+import com.whereverplay.app.domain.BeatInfo
 import com.whereverplay.app.domain.Project
 import com.whereverplay.app.domain.TimeFormat
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +79,7 @@ fun ProjectDetailScreen(
     val scope = rememberCoroutineScope()
     var editingInfo by remember { mutableStateOf(false) }
     var pickingTag by remember { mutableStateOf(false) }
+    var editingBeat by remember { mutableStateOf(false) }
     var viewerOpen by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     var saveHint by remember { mutableStateOf<String?>(null) }
@@ -137,7 +139,8 @@ fun ProjectDetailScreen(
         }
     }
 
-    fun sizeText(fileName: String): String {
+    fun sizeText(fileName: String?): String {
+        if (fileName.isNullOrBlank()) return "无（纯谱面项目）"
         val f = File(File(context.filesDir, "media"), fileName)
         if (!f.exists()) return "文件缺失"
         val kb = f.length() / 1024.0
@@ -220,10 +223,26 @@ fun ProjectDetailScreen(
                 actionText = if (project.tag == null) "选择" else "更换",
             ) { pickingTag = true }
 
+            Spacer(Modifier.height(8.dp))
+
+            // 0.2.1：BPM / 第一拍。入口暂时放这里，以后可能搬到编辑页或打点页，
+            // 搬的时候只改这一个 EditableRow + 下面的 BeatInfoDialog 调用，弹窗本身在独立文件里。
+            EditableRow(
+                label = "BPM / 第一拍",
+                value = BeatInfo.summary(project.bpm, project.firstBeatMs),
+                valueHighlight = project.bpm != null || project.firstBeatMs != null,
+                actionText = if (project.bpm == null && project.firstBeatMs == null) "设置" else "修改",
+            ) { editingBeat = true }
+
             Spacer(Modifier.height(16.dp))
 
             InfoGroup {
-                InfoRow("时长", TimeFormat.mmss(project.durationMs))
+                // 0.3.0：无音频项目的时长是「默认时间轴」，不是音频长度，要标出来
+                InfoRow(
+                    "时长",
+                    if (project.hasAudio) TimeFormat.mmss(project.durationMs)
+                    else "${TimeFormat.mmss(project.durationMs)}（无音频）",
+                )
                 InfoRow("页数", "${project.pageCount} 页")
                 InfoRow("打点数", "${project.marks.size} / ${project.pageCount}")
                 InfoRow("音频文件", sizeText(project.audioFile))
@@ -290,6 +309,20 @@ fun ProjectDetailScreen(
                 }) { Text("保存") }
             },
             dismissButton = { TextButton(onClick = { editingInfo = false }) { Text("取消") } },
+        )
+    }
+
+    // ---------- BPM / 第一拍 ----------
+    if (editingBeat) {
+        BeatInfoDialog(
+            bpm = project.bpm,
+            firstBeatMs = project.firstBeatMs,
+            durationMs = project.durationMs,
+            onSave = { bpm, firstBeat ->
+                onUpdate(project.copy(bpm = bpm, firstBeatMs = firstBeat))
+                editingBeat = false
+            },
+            onDismiss = { editingBeat = false },
         )
     }
 

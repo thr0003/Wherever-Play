@@ -72,6 +72,37 @@ object MarkRules {
 
     /** 是否可以继续添加翻页点 */
     fun canAddMore(marks: List<Mark>, pageCount: Int): Boolean = marks.size < pageCount
+
+    /**
+     * 把整组打点收进更短的时间轴里，**一页都不删**（0.3.0：移除音频 → 时长回落到 12:00）。
+     *
+     * 两趟：
+     *  1. 从后往前收：超出 [durationMs] 的时间压到时长上限，再往前每点留够 [MIN_GAP_MS]；
+     *  2. 从前往后推：把被压得太挤的点往上顶，保证「严格递增 + 最小间隔」仍然成立。
+     *
+     * 第 1 页永远钉在 0:00（数据模型的硬约束）。
+     * 极端情况（页数 × 300ms 已经超过新时长）会顶到上限后不再变化，那时 [validate] 会报错 ——
+     * 12 分钟能装 2400 页，现实里不会遇到。
+     */
+    fun clampToDuration(marks: List<Mark>, durationMs: Long): List<Mark> {
+        if (marks.size <= 1) return marks.map { it.copy(timeMs = 0L) }
+        val out = marks.toMutableList()
+
+        var limit = durationMs
+        for (i in out.lastIndex downTo 1) {
+            if (out[i].timeMs > limit) out[i] = out[i].copy(timeMs = limit)
+            limit = out[i].timeMs - MIN_GAP_MS
+        }
+        out[0] = out[0].copy(timeMs = 0L)
+
+        for (i in 1..out.lastIndex) {
+            val minT = out[i - 1].timeMs + MIN_GAP_MS
+            if (out[i].timeMs < minT) {
+                out[i] = out[i].copy(timeMs = minT.coerceAtMost(durationMs))
+            }
+        }
+        return out
+    }
 }
 
 /** 校验结果 */

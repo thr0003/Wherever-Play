@@ -117,6 +117,25 @@ fun rememberPageRenderWidth(): Int {
     }
 }
 
+/**
+ * WP: **按可用区域反推渲染宽度**（清单 #22，播放页专用）。
+ *
+ * 旧的「min(400dp, 屏宽)」是按宽度定的，竖版 A4 谱面在竖屏手机上会被高度卡住，
+ * 于是渲染出来的图比显示的大一圈（或者反过来，宽高比大的跨页谱渲染得太小、上屏再放大）。
+ * 这里改成：先把「整块可用区域」交给调用方，再按**页面自身的宽高比**算出铺满所需的宽度，
+ * 取 `min(可用宽, 可用高 × 宽高比)` —— 正好等于页面在屏幕上的实际像素尺寸。
+ *
+ * 最后再被 [PdfPageRenderer.maxWidthForBudget] 封顶：谱面铺满全屏后一页的字节数是以前的
+ * 1.5 倍左右，不封顶会把 48MB 缓存挤爆（老坑：「正在渲染第 N 页…」永远不消失）。
+ */
+@Composable
+fun rememberPageRenderWidth(aspect: Float, availWidthPx: Int, availHeightPx: Int): Int {
+    return remember(aspect, availWidthPx, availHeightPx) {
+        val byArea = minOf(availWidthPx, (availHeightPx * aspect).toInt())
+        minOf(byArea, PdfPageRenderer.maxWidthForBudget(aspect)).coerceAtLeast(64)
+    }
+}
+
 /** 按容器等比居中绘制谱面；bitmap 为空时显示提示（渲染失败不再静默黑屏） */
 @Composable
 fun PdfPageView(

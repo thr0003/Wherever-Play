@@ -73,15 +73,22 @@ fun MarkingScreen(
     onFinished: (Project) -> Unit,
 ) {
     val context = LocalContext.current
-    val audioFile = remember(project.id) { File(File(context.filesDir, "media"), project.audioFile) }
+    // 0.3.0：音频可空。无音频时打点页仍然能用 —— 播放头由「静音时钟」推进，
+    // 时间轴长度就是 project.durationMs（12:00）。
+    val audioFile = remember(project.id) {
+        project.audioFile?.let { File(File(context.filesDir, "media"), it) }
+    }
     val pdfFile = remember(project.id) { File(File(context.filesDir, "media"), project.pdfFile) }
+    val hasAudio = project.hasAudio
 
     val player = remember(project.id) { MediaPlayerAudioPlayer() }
     // WP: 真实时长必须 load() 之后再读（同播放页，remember 里读永远是 0）
     var playerDuration by remember(project.id) { mutableStateOf(0L) }
     DisposableEffect(project.id) {
-        player.load(audioFile.absolutePath)
-        playerDuration = player.durationMs
+        audioFile?.let {
+            player.load(it.absolutePath)
+            playerDuration = player.durationMs
+        }
         onDispose { player.release() }
     }
 
@@ -120,15 +127,24 @@ fun MarkingScreen(
     val duration = playerDuration.takeIf { it > 0 } ?: project.durationMs
     val safeDuration = duration.coerceAtLeast(1L)
 
-    LaunchedEffect(isPlaying) {
+    LaunchedEffect(isPlaying, project.id) {
         // WP: 一按播放就取消选中 —— 否则预览会一直钉在被选中的那一页，
         // 而光标已经在往前走了，看起来像「播放时谱面不动」。
         if (isPlaying) selected = null
+        var lastTick = android.os.SystemClock.elapsedRealtime()
         while (isPlaying) {
-            playhead = player.positionMs.coerceAtMost(safeDuration)
-            if (!player.isPlaying) {
-                isPlaying = false
-                playhead = safeDuration
+            if (hasAudio) {
+                playhead = player.positionMs.coerceAtMost(safeDuration)
+                if (!player.isPlaying) {
+                    isPlaying = false
+                    playhead = safeDuration
+                }
+            } else {
+                // 无音频：没有播放器可以读，按真实流逝时间推进播放头（静音时钟）
+                val now = android.os.SystemClock.elapsedRealtime()
+                playhead = (playhead + (now - lastTick)).coerceAtMost(safeDuration)
+                lastTick = now
+                if (playhead >= safeDuration) isPlaying = false
             }
             delay(16)
         }

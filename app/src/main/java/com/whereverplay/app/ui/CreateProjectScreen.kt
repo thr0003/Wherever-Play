@@ -67,6 +67,8 @@ fun CreateProjectScreen(
     var pickingTag by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    /** 上一次自动填进去的名字：用户没改过时，后选的文件可以继续覆盖它 */
+    var autoName by remember { mutableStateOf("") }
 
     val scope = rememberCoroutineScope()
 
@@ -74,13 +76,19 @@ fun CreateProjectScreen(
         if (uri != null) {
             audioUri = uri
             audioLabel = installer.displayName(uri) ?: "已选择"
-            if (name.isBlank()) name = audioLabel.substringBeforeLast('.')
         }
     }
     val pickPdf = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             pdfUri = uri
             pdfLabel = installer.displayName(uri) ?: "已选择"
+            // 0.3.0：项目名默认跟 **PDF 文件名** 一致（不再是音频名）。
+            // 只在「还空着」或「还是上一次自动填的」时才覆盖，用户自己敲的名字不能被第二次选文件冲掉。
+            val base = pdfLabel.substringBeforeLast('.')
+            if (base.isNotBlank() && (name.isBlank() || name == autoName)) {
+                name = base
+                autoName = base
+            }
         }
     }
     // Photo Picker：不需要任何存储权限
@@ -123,8 +131,8 @@ fun CreateProjectScreen(
             Spacer(Modifier.height(12.dp))
 
             PickerRow(
-                title = "伴奏音频",
-                hint = "mp3 / wav / flac，时长不超过 30 分钟",
+                title = "伴奏音频（可选）",
+                hint = "mp3 / wav / flac，不超过 30 分钟。不选也能建项目，时间轴按 12:00 算",
                 value = audioLabel,
                 onPick = { launchSaf { pickAudio.launch(arrayOf("audio/*")) } },
             )
@@ -132,8 +140,8 @@ fun CreateProjectScreen(
             Spacer(Modifier.height(16.dp))
 
             PickerRow(
-                title = "PDF 谱面",
-                hint = "请选择包含全部页面的 PDF",
+                title = "PDF 谱面（必填）",
+                hint = "请选择包含全部页面的 PDF。项目名默认取这个文件名",
                 value = pdfLabel,
                 onPick = { launchSaf { pickPdf.launch(arrayOf("application/pdf")) } },
             )
@@ -207,8 +215,9 @@ fun CreateProjectScreen(
                 onClick = {
                     val a = audioUri
                     val p = pdfUri
-                    if (a == null || p == null) {
-                        error = "请先选择伴奏音频和 PDF 谱面"
+                    // 0.3.0：音频可以不选，PDF 仍然是必须的
+                    if (p == null) {
+                        error = "请先选择 PDF 谱面（音频可以不选）"
                         return@Button
                     }
                     if (busy) return@Button
@@ -217,37 +226,37 @@ fun CreateProjectScreen(
                     scope.launch {
                         val result = withContext(Dispatchers.IO) {
                             runCatching {
-                                val audioName = installer.copyIn(a, "audio", "mp3")
+                                val audioName = a?.let { installer.copyIn(it, "audio", "mp3") }
                                 val pdfName = installer.copyIn(p, "pdf", "pdf")
-                                val audioFile = installer.fileOf(audioName)
                                 val pdfFile = installer.fileOf(pdfName)
-                                val duration = MediaInstaller.readDurationMs(audioFile)
+                                val audioFile = audioName?.let { installer.fileOf(it) }
+                                val duration = audioFile?.let { MediaInstaller.readDurationMs(it) } ?: 0L
                                 val pageCount = PdfPageRenderer.pageCountOf(pdfFile)
-                                // 封面：用户选了就用用户的，否则尝试音频内嵌封面
+                                // 封面：用户选了就用用户的，否则尝试音频内嵌封面（没有音频就没有）
                                 // 封面统一裁成正方形（512px），列表里永远不会被拉成长条
                                 val chosenCover = coverUri
                                 val coverName = if (chosenCover != null) {
                                     installer.copyInSquareCover(chosenCover)
                                 } else {
-                                    MediaInstaller.readEmbeddedCover(audioFile)
+                                    audioFile?.let { MediaInstaller.readEmbeddedCover(it) }
                                         ?.let { bytes -> installer.saveSquareCoverFromBytes(bytes) }
                                 }
-                                Triple(audioName, pdfName, CoverAndMeta(coverName, duration, pageCount))
+                                CreatedMeta(audioName, pdfName, coverName, duration, pageCount)
                             }
                         }
                         busy = false
-                        result.onSuccess { (audioName, pdfName, meta) ->
+                        result.onSuccess { meta ->
                             fun discardFiles() {
-                                runCatching { installer.fileOf(audioName).delete() }
-                                runCatching { installer.fileOf(pdfName).delete() }
+                                meta.audio?.let { runCatching { installer.fileOf(it).delete() } }
+                                runCatching { installer.fileOf(meta.pdf).delete() }
                                 meta.cover?.let { runCatching { installer.fileOf(it).delete() } }
                             }
                             when {
-                                meta.duration <= 0L -> {
+                                meta.audio != null && meta.duration <= 0L -> {
                                     discardFiles()
-                                    error = "无法读取音频时长，请换一个文件试试"
+                                    error = "无法读取音频时长，请换一个文件试试（或者不选音频直接建项目）"
                                 }
-                                meta.duration > MAX_AUDIO_MS -> {
+                                meta.audio != null && meta.duration > MAX_AUDIO_MS -> {
                                     discardFiles()
                                     error = "音频时长超过 30 分钟上限（当前 ${meta.duration / 60000} 分钟）"
                                 }
@@ -260,19 +269,27 @@ fun CreateProjectScreen(
                                     onCreated(
                                         Project(
                                             id = UUID.randomUUID().toString(),
-                                            name = name.ifBlank { "未命名项目" },
+                                            name = name.trim().ifBlank {
+                                                meta.pdf.substringBeforeLast('.')
+                                            },
                                             author = author.trim(),
-                                            audioFile = audioName,
-                                            pdfFile = pdfName,
+                                            audioFile = meta.audio,
+                                            pdfFile = meta.pdf,
                                             coverFile = meta.cover,
                                             pageCount = meta.pageCount,
-                                            durationMs = meta.duration,
+                                            // 无音频 → 固定 12:00 的空时间轴，用户照样能在上面打点
+                                            durationMs = if (meta.audio == null) {
+                                                Project.DEFAULT_DURATION_MS
+                                            } else {
+                                                meta.duration
+                                            },
                                             // 第 1 页固定在 0:00，数据模型的硬约束
                                             marks = listOf(com.whereverplay.app.domain.Mark(page = 1, timeMs = 0L)),
                                             isFavorite = false,
                                             tag = tag,
                                             createdAt = now,
                                             lastOpenedAt = now,
+                                            updatedAt = now,
                                         )
                                     )
                                 }
@@ -309,7 +326,14 @@ fun CreateProjectScreen(
     }
 }
 
-private data class CoverAndMeta(val cover: String?, val duration: Long, val pageCount: Int)
+/** 新建过程中落盘的文件与测出来的元信息。audio 为 null = 这个项目没有音频（0.3.0） */
+private data class CreatedMeta(
+    val audio: String?,
+    val pdf: String,
+    val cover: String?,
+    val duration: Long,
+    val pageCount: Int,
+)
 
 @Composable
 private fun PickerRow(title: String, hint: String, value: String, onPick: () -> Unit) {

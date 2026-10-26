@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,6 +31,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -62,6 +65,22 @@ fun HomeScreen(
     projects: List<Project>,
     playlists: List<Playlist>,
     tags: List<String>,
+    // 项目 tab 的视图状态：AppRoot 持有，进出详情/播放/打点后不丢（排序跳回「最近修改」的修复）
+    projectQuery: String,
+    projectFilter: ProjectFilter,
+    projectTagFilter: String?,
+    projectSort: ProjectSort,
+    projectSortAsc: Boolean,
+    onProjectQueryChange: (String) -> Unit,
+    onProjectFilterChange: (ProjectFilter) -> Unit,
+    onProjectTagFilterChange: (String?) -> Unit,
+    onProjectSortChange: (ProjectSort) -> Unit,
+    onProjectSortAscChange: (Boolean) -> Unit,
+    /** 首页网格 / 播放列表列表的滚动位置、多选选中集合：AppRoot 持有，进出路由后不丢 */
+    projectGridState: LazyGridState,
+    playlistListState: LazyListState,
+    projectSelection: SnapshotStateList<String>,
+    playlistSelection: SnapshotStateList<String>,
     settings: SettingsStore,
     tab: Int,
     onTabChange: (Int) -> Unit,
@@ -73,6 +92,9 @@ fun HomeScreen(
     onBatchDeleteProjects: (List<Project>) -> Unit,
     onBatchFavoriteProjects: (List<Project>) -> Unit,
     onBatchExportProjects: (List<Project>) -> Unit,
+    /** 多选批量加入播放列表（#21） */
+    onBatchAppendToPlaylist: (Playlist, List<Project>) -> Unit,
+    onBatchCreatePlaylistFor: (String, List<Project>) -> Unit,
     onShowDetail: (Project) -> Unit,
     onEditProject: (Project) -> Unit,
     onExportProject: (Project) -> Unit,
@@ -137,6 +159,18 @@ fun HomeScreen(
                     0 -> ProjectListScreen(
                         projects = projects,
                         tags = tags,
+                        query = projectQuery,
+                        filter = projectFilter,
+                        tagFilter = projectTagFilter,
+                        sort = projectSort,
+                        sortAsc = projectSortAsc,
+                        onQueryChange = onProjectQueryChange,
+                        onFilterChange = onProjectFilterChange,
+                        onTagFilterChange = onProjectTagFilterChange,
+                        onSortChange = onProjectSortChange,
+                        onSortAscChange = onProjectSortAscChange,
+                        gridState = projectGridState,
+                        selection = projectSelection,
                         onOpen = onOpenProject,
                         onToggleFavorite = onToggleFavorite,
                         onCreate = onCreateProject,
@@ -144,6 +178,9 @@ fun HomeScreen(
                         onBatchDelete = onBatchDeleteProjects,
                         onBatchFavorite = onBatchFavoriteProjects,
                         onBatchExport = onBatchExportProjects,
+                        playlists = playlists,
+                        onBatchAppendToPlaylist = onBatchAppendToPlaylist,
+                        onBatchCreatePlaylist = onBatchCreatePlaylistFor,
                         onShowDetail = onShowDetail,
                         onEdit = onEditProject,
                         onExport = onExportProject,
@@ -152,6 +189,8 @@ fun HomeScreen(
                     1 -> PlaylistsScreen(
                         playlists = playlists,
                         projects = remember(projects) { projects.associateBy { it.id } },
+                        listState = playlistListState,
+                        selection = playlistSelection,
                         onCreate = onCreatePlaylist,
                         onImport = onImportPlaylist,
                         onPlay = onPlayPlaylist,

@@ -56,6 +56,8 @@ class JsonPlaylistStore(context: Context) : PlaylistRepository {
         put("coverFile", p.coverFile ?: "")
         put("createdAt", p.createdAt)
         put("lastOpenedAt", p.lastOpenedAt)
+        // 0.2.2：手动翻谱偏好（三态），只在设过时写
+        p.manualTurn?.let { put("manualTurn", it) }
     }
 
     private fun fromJson(o: JSONObject): Playlist {
@@ -73,6 +75,7 @@ class JsonPlaylistStore(context: Context) : PlaylistRepository {
             coverFile = o.optString("coverFile", "").takeIf { it.isNotBlank() },
             createdAt = created,
             lastOpenedAt = o.optLong("lastOpenedAt", created),
+            manualTurn = if (o.has("manualTurn")) o.optBoolean("manualTurn", false) else null,
         )
     }
 }

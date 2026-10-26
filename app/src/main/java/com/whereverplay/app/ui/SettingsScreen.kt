@@ -61,6 +61,7 @@ fun SettingsScreen(
     var offset by remember { mutableStateOf(settings.pageTurnOffsetMs) }
     var keepOn by remember { mutableStateOf(settings.keepScreenOn) }
     var anim by remember { mutableStateOf(settings.pageTurnAnimation) }
+    var manualDefault by remember { mutableStateOf(settings.manualTurn) }
     var confirmClear by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
@@ -110,6 +111,28 @@ fun SettingsScreen(
                 )
             }
             DividerLine()
+            // 0.2.2：手动翻谱的**全局默认**。单项/单个列表可以在播放页左下角单独覆盖，
+            // 所以这里写「默认」而不是「全部」—— 说「所有项目都手动」会让人以为改不了单个。
+            SettingRow(
+                "默认手动翻谱",
+                "默认值：不跟打点，自己翻。单个项目或播放列表可以在播放页左下角单独改",
+                trailingDivider = true,
+            ) {
+                Switch(
+                    checked = manualDefault,
+                    onCheckedChange = {
+                        manualDefault = it
+                        settings.manualTurn = it
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                        checkedTrackColor = MaterialTheme.colorScheme.primary,
+                        uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        uncheckedTrackColor = Color(0x1FFFFFFF),
+                        uncheckedBorderColor = Glass.border,
+                    ),
+                )
+            }
             // 开关行：trailing 是 Switch，末行不需要再画分隔线
             SettingRow("播放时保持屏幕常亮", null) {
                 Switch(

@@ -6,6 +6,10 @@ import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -17,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -59,6 +64,8 @@ private sealed interface Route {
         val queue: List<Project>,
         val startIndex: Int = 0,
         val autoAdvanceMs: Long? = null,
+        /** 0.2.2：非空 = 这一场是「播放列表播放」，手动翻谱开关作用于整个列表而不是单曲 */
+        val playlist: Playlist? = null,
     ) : Route
 
     data class PlaylistEdit(val playlist: Playlist) : Route
@@ -100,9 +107,46 @@ fun AppRoot() {
     var toast by remember { mutableStateOf<String?>(null) }
     var pendingExport by remember { mutableStateOf<ExportRequest?>(null) }
 
+    // 首页项目列表的视图状态（搜索词 / 收藏筛选 / 标签筛选 / 排序 / 升降序）。
+    // 之前是 ProjectListScreen 的局部 remember —— 点进项目路由切走、组件销毁，
+    // 回来就全变回默认值（排序跳回「最近修改」就是这来的）。提升到这里常驻不丢。
+    var projectQuery by remember { mutableStateOf("") }
+    var projectFilter by remember { mutableStateOf(ProjectFilter.All) }
+    var projectTagFilter by remember { mutableStateOf<String?>(null) }
+    var projectSort by remember { mutableStateOf(ProjectSort.Recent) }
+    var projectSortAsc by remember { mutableStateOf(false) }
+
+    // 两个 tab 的滚动位置与多选选中集合 —— 同一批「路由切走就丢」的问题，一起提升。
+    // 注意 LazyGridState / LazyListState / SnapshotStateList 都是普通对象，
+    // remember 一次即可，路由切换期间它们只是不被组合，值不会丢。
+    val projectGridState = rememberLazyGridState()
+    val playlistListState = rememberLazyListState()
+    val projectSelection = remember { mutableStateListOf<String>() }
+    val playlistSelection = remember { mutableStateListOf<String>() }
+
     fun reload() {
         projects = repo.all()
         playlists = playlistRepo.all()
+    }
+
+    /**
+     * WP: 项目保存的统一出口 —— 内容字段有任何变化就把 [Project.updatedAt] 刷成现在，
+     * 这是首页「最近修改」排序的唯一依据。点进去看 / 播放只动 lastOpenedAt，不算修改。
+     *
+     * 对比时排除 createdAt / lastOpenedAt / updatedAt 三个时间字段：以后 Project 加新字段
+     * 会自动被纳入「算修改」的范围，不用再回来补这里。
+     */
+    fun stampUpdate(p: Project): Project {
+        val prev = projects.firstOrNull { it.id == p.id } ?: return p
+        val changed = p.copy(
+            createdAt = prev.createdAt,
+            lastOpenedAt = prev.lastOpenedAt,
+            updatedAt = prev.updatedAt,
+            // 0.2.2：手动翻谱是「播放偏好」，跟时间字段一样不计入内容修改，
+            // 否则在播放页点一下开关，这个项目就窜到「最近修改」第一位了
+            manualTurn = prev.manualTurn,
+        ) != prev
+        return if (changed) p.copy(updatedAt = System.currentTimeMillis()) else p
     }
 
     fun notify(msg: String) {
@@ -118,7 +162,7 @@ fun AppRoot() {
 
     fun openProject(p: Project) {
         val touched = p.copy(lastOpenedAt = System.currentTimeMillis())
-        repo.save(touched)
+        repo.save(stampUpdate(touched))
         reload()
         route = if (touched.configured) Route.Play(listOf(touched)) else Route.Mark(touched.id)
     }
@@ -139,12 +183,15 @@ fun AppRoot() {
             return
         }
         // 开播即算「最近打开过」，首页按时间排序才有意义
-        playlistRepo.save(list.copy(lastOpenedAt = System.currentTimeMillis()))
+        val opened = list.copy(lastOpenedAt = System.currentTimeMillis())
+        playlistRepo.save(opened)
         playlists = playlistRepo.all()
         route = Route.Play(
             queue = available,
             startIndex = 0,
             autoAdvanceMs = if (list.advanceMode == Playlist.ADVANCE_AUTO) list.gapMs else null,
+            // 0.2.2：把列表本身带过去 —— 手动翻谱开关要落到「这个列表」上，而不是列表里的某一首
+            playlist = opened,
         )
     }
 
@@ -223,6 +270,47 @@ fun AppRoot() {
         reload()
     }
 
+    /**
+     * WP: 首页多选 → 批量加入播放列表（清单 #21）。
+     *
+     * 只追加「列表里还没有」的项目，新的一律接在末尾（原有顺序不动）；
+     * 全都在里面时**不写盘**，只给一句提示 —— 否则用户会以为操作失败了。
+     */
+    fun appendToPlaylist(playlist: Playlist, selected: List<Project>) {
+        val existing = playlist.projectIds.toSet()
+        val fresh = selected.map { it.id }.filter { it !in existing }
+        if (fresh.isEmpty()) {
+            notify("选中的 ${selected.size} 首都已经在「${playlist.name}」里了")
+            return
+        }
+        playlistRepo.save(playlist.copy(projectIds = playlist.projectIds + fresh))
+        playlists = playlistRepo.all()
+        val skipped = selected.size - fresh.size
+        notify(
+            if (skipped == 0) "已加入「${playlist.name}」${fresh.size} 首"
+            else "已加入「${playlist.name}」${fresh.size} 首，$skipped 首已在列表里"
+        )
+    }
+
+    /** #21 的「现建一个列表」：建完**不进编辑页**（用户还在多选流程里），只弹提示 */
+    fun createPlaylistWith(name: String, selected: List<Project>) {
+        val now = System.currentTimeMillis()
+        playlistRepo.save(
+            Playlist(
+                id = UUID.randomUUID().toString(),
+                name = name,
+                projectIds = selected.map { it.id },
+                advanceMode = Playlist.ADVANCE_MANUAL,
+                gapMs = 3000L,
+                coverFile = null,
+                createdAt = now,
+                lastOpenedAt = now,
+            )
+        )
+        playlists = playlistRepo.all()
+        notify("已新建「$name」，加入 ${selected.size} 首")
+    }
+
     // 兜底返回：子页面自己注册的 BackHandler 优先（后注册者优先）
     androidx.activity.compose.BackHandler(enabled = route != null) { route = null }
 
@@ -239,12 +327,26 @@ fun AppRoot() {
                             projects = projects,
                             playlists = playlists,
                             tags = tags,
+                            projectQuery = projectQuery,
+                            projectFilter = projectFilter,
+                            projectTagFilter = projectTagFilter,
+                            projectSort = projectSort,
+                            projectSortAsc = projectSortAsc,
+                            onProjectQueryChange = { projectQuery = it },
+                            onProjectFilterChange = { projectFilter = it },
+                            onProjectTagFilterChange = { projectTagFilter = it },
+                            onProjectSortChange = { projectSort = it },
+                            onProjectSortAscChange = { projectSortAsc = it },
+                            projectGridState = projectGridState,
+                            playlistListState = playlistListState,
+                            projectSelection = projectSelection,
+                            playlistSelection = playlistSelection,
                             settings = settings,
                             tab = tab,
                             onTabChange = { tab = it },
                             onOpenProject = { openProject(it) },
                             onToggleFavorite = { p ->
-                                repo.save(p.copy(isFavorite = !p.isFavorite))
+                                repo.save(stampUpdate(p.copy(isFavorite = !p.isFavorite)))
                                 reload()
                             },
                             onCreateProject = { route = Route.Create },
@@ -260,10 +362,12 @@ fun AppRoot() {
                                 reload()
                             },
                             onBatchFavoriteProjects = { list ->
-                                list.forEach { repo.save(it.copy(isFavorite = true)) }
+                                list.forEach { repo.save(stampUpdate(it.copy(isFavorite = true))) }
                                 reload()
                             },
                             onBatchExportProjects = { list -> startExport(ExportRequest.Projects(list)) },
+                            onBatchAppendToPlaylist = { playlist, list -> appendToPlaylist(playlist, list) },
+                            onBatchCreatePlaylistFor = { name, list -> createPlaylistWith(name, list) },
                             onShowDetail = { route = Route.Detail(it.id) },
                             onEditProject = { route = Route.Edit(it.id) },
                             onExportProject = { startExport(ExportRequest.Projects(listOf(it))) },
@@ -313,7 +417,7 @@ fun AppRoot() {
                                     onOpenPlay = { route = Route.Play(listOf(it)) },
                                     onOpenEdit = { route = Route.Edit(it.id) },
                                     onUpdate = { updated ->
-                                        repo.save(updated)
+                                        repo.save(stampUpdate(updated))
                                         reload()
                                     },
                                     onAddTag = { name ->
@@ -338,7 +442,7 @@ fun AppRoot() {
                                     onBack = { route = null },
                                     onOpenMarks = { route = Route.Mark(it.id) },
                                     onUpdate = { updated ->
-                                        repo.save(updated)
+                                        repo.save(stampUpdate(updated))
                                         reload()
                                     },
                                     onExport = { startExport(ExportRequest.Projects(listOf(it))) },
@@ -362,10 +466,12 @@ fun AppRoot() {
                                 ok
                             },
                             onCancel = { route = null },
+                            // 0.2.2：新建完**不再自动进打点页**（用户明确），回首页列表，用户自己决定下一步
                             onCreated = { p ->
-                                repo.save(p)
+                                repo.save(stampUpdate(p))
                                 reload()
-                                route = Route.Mark(p.id)
+                                route = null
+                                notify("已创建「${p.name}」")
                             },
                         )
 
@@ -377,12 +483,12 @@ fun AppRoot() {
                                 MarkingScreen(
                                     project = p,
                                     onExit = { updated ->
-                                        repo.save(updated)
+                                        repo.save(stampUpdate(updated))
                                         reload()
                                         route = null
                                     },
                                     onFinished = { updated ->
-                                        repo.save(updated)
+                                        repo.save(stampUpdate(updated))
                                         reload()
                                         route = Route.Play(listOf(updated))
                                     },
@@ -390,17 +496,48 @@ fun AppRoot() {
                             }
                         }
 
-                        is Route.Play -> PlaybackScreen(
-                            queue = r.queue,
-                            startIndex = r.startIndex,
-                            autoAdvanceMs = r.autoAdvanceMs,
-                            settings = settings,
-                            onExit = {
-                                reload()
-                                route = null
-                            },
-                            onRematch = { route = Route.Mark(r.queue[r.startIndex].id) },
-                        )
+                        is Route.Play -> {
+                            // 0.2.2：手动翻谱的作用域 —— 播放列表播放时是整个列表，单曲播放时是这个项目。
+                            // 作用域里没设置过（null）就由播放页回退到设置页的全局默认。
+                            val currentId = r.queue.getOrNull(r.startIndex)?.id
+                            val scopedProject = projects.firstOrNull { it.id == currentId }
+                                ?: r.queue.getOrNull(r.startIndex)
+                            PlaybackScreen(
+                                queue = r.queue,
+                                startIndex = r.startIndex,
+                                autoAdvanceMs = r.autoAdvanceMs,
+                                settings = settings,
+                                manualTurnSetting = r.playlist?.manualTurn ?: scopedProject?.manualTurn,
+                                manualScopeKey = r.playlist?.id ?: "project:${scopedProject?.id ?: ""}",
+                                onManualTurnChange = { value ->
+                                    val pl = r.playlist
+                                    if (pl != null) {
+                                        // 列表播放：改的是列表自己的偏好，列表里换歌不会重置
+                                        val updated = pl.copy(manualTurn = value)
+                                        playlistRepo.save(updated)
+                                        playlists = playlistRepo.all()
+                                        route = r.copy(playlist = updated)
+                                    } else {
+                                        // 单曲播放：改的是这个项目的偏好（不刷新 updatedAt）
+                                        val p = scopedProject
+                                        if (p != null) {
+                                            repo.save(stampUpdate(p.copy(manualTurn = value)))
+                                            reload()
+                                        }
+                                        route = r.copy(
+                                            queue = r.queue.map {
+                                                if (it.id == currentId) it.copy(manualTurn = value) else it
+                                            },
+                                        )
+                                    }
+                                },
+                                onExit = {
+                                    reload()
+                                    route = null
+                                },
+                                onRematch = { route = Route.Mark(r.queue[r.startIndex].id) },
+                            )
+                        }
 
                         is Route.PlaylistEdit -> PlaylistEditScreen(
                             playlist = r.playlist,

@@ -15,6 +15,12 @@ data class Playlist(
     val coverFile: String?,
     val createdAt: Long,
     val lastOpenedAt: Long,
+    /**
+     * WP: 这个列表播放时是否**手动翻谱**。三态含义与 [Project.manualTurn] 完全一致：
+     * `null` = 跟随设置页的全局默认；`true/false` = 在播放页左下角点过，以它为准。
+     * 作用于整个列表（列表里换歌不重置），跟着 `.wplist` 一起走。
+     */
+    val manualTurn: Boolean? = null,
 ) {
     companion object {
         const val ADVANCE_MANUAL = 0
