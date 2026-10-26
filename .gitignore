@@ -12,3 +12,6 @@ local.properties
 *.keystore
 keystore.properties
 app/build/
+
+# 交接文档含本机 PAT 等凭据，不进公开仓库（本地文件照常保留在 docs/ 下）
+docs/交接文档.md
