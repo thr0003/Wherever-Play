@@ -52,7 +52,11 @@ fun MarkingTimeline(
     zoom: Float,
     selectedIndex: Int?,
     onZoom: (Float) -> Unit,
-    onScrub: (Long) -> Unit,
+    /**
+     * 拖动 / 单击轨道都走这里。
+     * [fromTap] = true 表示「单击跳转」（播放中可以不打断播放），false = 拖动擦洗。
+     */
+    onScrub: (Long, Boolean) -> Unit,
     onSelectMark: (Int?) -> Unit,
     onMoveMark: (Int, Long) -> Unit,
     onMarkDragStart: () -> Unit,
@@ -94,19 +98,30 @@ fun MarkingTimeline(
 
     val safeDuration = durationMs.coerceAtLeast(1L)
     val visibleMs = (safeDuration / zoom.coerceIn(1f, 40f)).coerceAtLeast(1000f)
-    val followStart = (playheadMs - visibleMs / 2f).coerceIn(0f, (safeDuration - visibleMs).coerceAtLeast(0f))
+    val maxStart = (safeDuration - visibleMs).coerceAtLeast(0f)
 
-    // 拖动期间冻结视窗，松手后恢复「跟随播放头居中」
+    /**
+     * 2026-10-26（用户第 4 条）：**播放头不再钉在视窗中间**。
+     *
+     * 视窗改成「分段翻页」：可视范围固定 [visibleMs]，视窗起点 = 光标所在**段的起点**。
+     *  - 播放时视窗一动不动，光标从左往右走；
+     *  - 光标走到最右端（= 下一段起点）时，视窗整段切到下一段，光标出现在最左端。
+     * 比原来的「followStart = 光标 − 半屏」省掉了一整类正反馈问题：
+     * 拖动期间照样冻结视窗（见 [frozenStart]），1px 仍恒等固定时长。
+     */
+    val segmentStart = ((playheadMs / visibleMs).toInt() * visibleMs).coerceIn(0f, maxStart)
+
+    // 拖动期间冻结视窗，松手后回到「光标所在段」的起点
     var frozenStart by remember { mutableStateOf<Float?>(null) }
-    val viewStart = frozenStart ?: followStart
+    val viewStart = frozenStart ?: segmentStart
 
     val marksRef = rememberUpdatedState(marks)
     val durationRef = rememberUpdatedState(safeDuration)
     val visibleRef = rememberUpdatedState(visibleMs)
     val zoomRef = rememberUpdatedState(zoom)
     val frozenRef = rememberUpdatedState(frozenStart)
-    // pointerInput(Unit) 里的 lambda 只会在首次组合时捕获变量，followStart 也会过期
-    val followRef = rememberUpdatedState(followStart)
+    // pointerInput(Unit) 里的 lambda 只会在首次组合时捕获变量，segmentStart 也会过期
+    val segmentRef = rememberUpdatedState(segmentStart)
 
     var draggingIndex by remember { mutableStateOf<Int?>(null) }
     val multiTouch = remember { mutableStateOf(false) }
@@ -138,7 +153,7 @@ fun MarkingTimeline(
         var best = -1
         var bestDist = Float.MAX_VALUE
         marksRef.value.forEachIndexed { i, m ->
-            val dx = abs(x - timeToX(m.timeMs, width, frozenRef.value ?: followRef.value, visibleRef.value))
+            val dx = abs(x - timeToX(m.timeMs, width, frozenRef.value ?: segmentRef.value, visibleRef.value))
             if (dx < hitSlop && dx < bestDist) {
                 best = i; bestDist = dx
             }
@@ -151,7 +166,7 @@ fun MarkingTimeline(
         if (!dragActive || edgeDir == 0) return@LaunchedEffect
         while (dragActive && edgeDir != 0) {
             delay(16)
-            val current = frozenRef.value ?: followRef.value
+            val current = frozenRef.value ?: segmentRef.value
             val maxStart = (safeDuration - visibleRef.value).coerceAtLeast(0f)
             // 基础速度 0.12%/帧，贴到边缘时最高 0.87%/帧（约 2 秒扫过一屏）
             val f = edgeFactor
@@ -161,7 +176,7 @@ fun MarkingTimeline(
                 edgeDir = 0
             } else {
                 frozenStart = next
-                onScrub(xToTime(fingerX, canvasW, next, visibleRef.value))
+                onScrub(xToTime(fingerX, canvasW, next, visibleRef.value), false)
             }
         }
     }
@@ -187,7 +202,7 @@ fun MarkingTimeline(
                         } else {
                             // 点在轨道上：进入擦洗，冻结视窗保证精度
                             draggingIndex = null
-                            frozenStart = followRef.value
+                            frozenStart = segmentRef.value
                             onSelectMark(null)
                         }
                     },
@@ -195,13 +210,13 @@ fun MarkingTimeline(
                         if (multiTouch.value) return@detectDragGestures
                         val w = size.width.toFloat()
                         fingerX = change.position.x
-                        val start = frozenRef.value ?: followRef.value
+                        val start = frozenRef.value ?: segmentRef.value
                         val idx = draggingIndex
                         if (idx != null) {
                             onMoveMark(idx, xToTime(change.position.x, w, start, visibleRef.value))
                             edgeDir = 0
                         } else {
-                            onScrub(xToTime(change.position.x, w, start, visibleRef.value))
+                            onScrub(xToTime(change.position.x, w, start, visibleRef.value), false)
                             // WP: 边缘 10% 区域开始自动滚动，越靠边越快（二次曲线），有上限
                             val zone = (w * 0.10f).coerceAtLeast(edgeZoneMin)
                             val distLeft = change.position.x - padPx
@@ -247,7 +262,7 @@ fun MarkingTimeline(
                         onSelectMark(dot)
                     } else {
                         onSelectMark(null)
-                        onScrub(xToTime(offset.x, w, followRef.value, visibleRef.value))
+                        onScrub(xToTime(offset.x, w, segmentRef.value, visibleRef.value), true)
                     }
                 }
             }

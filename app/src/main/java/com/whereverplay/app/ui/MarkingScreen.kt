@@ -100,6 +100,9 @@ fun MarkingScreen(
     var message by remember { mutableStateOf<String?>(null) }
     var moreMenu by remember { mutableStateOf(false) }
     var lastSeekAt by remember { mutableStateOf(0L) }
+    // 2026-10-26：播放中点击进度条跳转后，MediaPlayer 的 currentPosition 在 seek 完成前
+    // 仍是旧值 —— 播放循环一读就把播放头拉回去，看起来像「点了没用」。这段时间不去读它。
+    var seekGuardUntil by remember { mutableStateOf(0L) }
 
     val undoStack = remember { mutableStateListOf<List<Mark>>() }
     val redoStack = remember { mutableStateListOf<List<Mark>>() }
@@ -134,10 +137,14 @@ fun MarkingScreen(
         var lastTick = android.os.SystemClock.elapsedRealtime()
         while (isPlaying) {
             if (hasAudio) {
-                playhead = player.positionMs.coerceAtMost(safeDuration)
-                if (!player.isPlaying) {
-                    isPlaying = false
-                    playhead = safeDuration
+                val now = android.os.SystemClock.elapsedRealtime()
+                // 跳转保护窗口内不读播放器位置（读到的还是跳转前的位置）
+                if (now >= seekGuardUntil) {
+                    playhead = player.positionMs.coerceAtMost(safeDuration)
+                    if (!player.isPlaying) {
+                        isPlaying = false
+                        playhead = safeDuration
+                    }
                 }
             } else {
                 // 无音频：没有播放器可以读，按真实流逝时间推进播放头（静音时钟）
@@ -358,15 +365,27 @@ fun MarkingScreen(
             Spacer(Modifier.weight(1f))
         }
 
-        // ---------- 微调行（选中后自动出现，40 高）----------
+        // ---------- 微调行（常驻 40 高，不随选中出现/消失）----------
+        // 2026-10-26（用户第 3 条）：这行以前是「选中后才组合」的，点一下小圆点突然多出 40dp，
+        // 上方 weight(1f) 的预览窗被挤小 —— 看起来像谱面被缩放了一下。改成**常驻**：
+        // 未选中时这里显示操作提示（原底部那行说明），选中时变回微调胶囊，
+        // 行高恒定 → 预览窗尺寸全程不变。
         val tuningIdx = selected
         val tuningMark = tuningIdx?.let { marks.getOrNull(it) }
-        if (tuningIdx != null && tuningMark != null) {
-            Row(
-                Modifier.fillMaxWidth().height(40.dp).padding(start = 12.dp, end = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+        Row(
+            Modifier.fillMaxWidth().height(40.dp).padding(start = 12.dp, end = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (tuningIdx == null || tuningMark == null) {
+                Text(
+                    "点圆点选中后可微调 · 双指缩放时间轴 · 拖片段交界处改翻页时刻",
+                    fontSize = 9.sp,
+                    color = Color(0xFF6E6E78),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            } else {
                 Text("微调", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (tuningMark.page <= 1) {
                     // WP: 第 1 页固定在 0:00（domain 层 MarkRules.move 直接 return），
@@ -405,12 +424,22 @@ fun MarkingScreen(
             zoom = zoom,
             selectedIndex = selected,
             onZoom = { zoom = it },
-            onScrub = { t ->
-                if (isPlaying) { player.pause(); isPlaying = false }
+            onScrub = { t, fromTap ->
+                // 2026-10-26（用户第 2 条）：播放中**点击**轨道只把光标跳过去，不打断播放。
+                // 拖动擦洗仍然暂停 —— 擦洗是每 80ms 一次的连续 seek，边播边拖声音会碎。
+                val wasPlaying = isPlaying
+                if (wasPlaying && !fromTap) {
+                    player.pause(); isPlaying = false
+                }
                 playhead = t
-                // WP: 拖动和边缘滚动会高频回调，每帧 seek 会让播放器卡顿，节流到 80ms
                 val now = android.os.SystemClock.elapsedRealtime()
-                if (now - lastSeekAt > 80) {
+                if (wasPlaying && fromTap) {
+                    // 播放中跳转：seek 完成前 currentPosition 还是旧值，开一个忽略窗口，
+                    // 否则播放循环立刻把光标拉回原处（看起来像「点了没反应」）
+                    seekGuardUntil = now + 300
+                    if (hasAudio) player.seekTo(t)
+                } else if (now - lastSeekAt > 80) {
+                    // WP: 拖动和边缘滚动会高频回调，每帧 seek 会让播放器卡顿，节流到 80ms
                     lastSeekAt = now
                     player.seekTo(t)
                 }
@@ -489,15 +518,6 @@ fun MarkingScreen(
                 }
             }
         }
-
-        Text(
-            "点圆点选中后可微调 · 双指缩放时间轴 · 拖片段交界处改翻页时刻",
-            fontSize = 9.sp,
-            color = Color(0xFF6E6E78),
-            modifier = Modifier
-                .align(Alignment.CenterHorizontally)
-                .padding(vertical = 4.dp)
-        )
     }
 }
 

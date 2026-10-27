@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animate
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
@@ -543,28 +542,15 @@ fun PlaybackScreen(
         val pageOffset = if (animating) animOffset * widthPx else dragOffset
 
         // ---------- 谱面：三页并排，跟手位移 ----------
-        // #22 谱面尽量占满全屏：
-        //  - 控制栏显示时，谱面区 = 屏幕 − 顶栏 56 − 控制区 100（和以前一样，谱面不被压住，
-        //    排练记号/页码不会被挡 —— 这是当初特意留白的原因）；
-        //  - 点一下隐藏控制栏后，谱面区**动画长到整屏**，得到真正的全屏谱面。
-        // 留白现在是个动画量，但它只跟「控制栏显隐」走，翻页期间纹丝不动，
-        // 所以坑 #3 的「翻页时谱面上下跳」不会复现（那一版是把留白跟翻页绑在一起变）。
-        val controlBarHeight = 100.dp
-        val topInset by animateDpAsState(
-            if (controlsVisible) 56.dp else 0.dp,
-            animationSpec = tween(WpMotion.BAR_MS, easing = WpMotion.BarEasing),
-            label = "pageTopInset",
-        )
-        val bottomInset by animateDpAsState(
-            if (controlsVisible) controlBarHeight else 0.dp,
-            animationSpec = tween(WpMotion.BAR_MS, easing = WpMotion.BarEasing),
-            label = "pageBottomInset",
-        )
+        // #22 谱面尽量占满全屏。
+        // 2026-10-26（用户第 5 条）：**控制栏显隐不再改变谱面尺寸**。
+        // 以前顶栏 56 / 底栏 100 是从谱面区里「挤」出来的，一点屏幕谱面就缩一圈。
+        // 现在谱面区恒定整屏（和隐藏控制栏时一样大），上下栏改成**半透明黑叠加**在谱面上，
+        // 谱面的渲染宽度本来就按整屏算（见 rememberPageRenderWidth），所以画质不受影响。
         val zoomed = zoom > 1.001f
         Box(
             Modifier
                 .fillMaxSize()
-                .padding(top = topInset, bottom = bottomInset)
                 .clipToBounds()
                 .pointerInput(widthPx, displayPage, zoomed) {
                     // #24 放大之后单指改成平移，翻页手势整组让位 —— 同一根手指只能有一种含义
@@ -732,7 +718,11 @@ fun PlaybackScreen(
                 Modifier
                     .fillMaxWidth()
                     .height(56.dp)
-                    .background(Color(0xFF0B0B0E))
+                    // 2026-10-26（用户第 5 条）：半透明黑叠在谱面上，不再把谱面往下挤。
+                    // 顺手吃掉落在栏上的点击 —— 谱面区现在是整屏、在栏的下层，
+                    // 不消费的话点栏空白处会「穿透」下去，把控制栏又切换没了。
+                    .background(Color(0xCC0B0B0E))
+                    .pointerInput(Unit) { detectTapGestures { } }
                     .padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -842,7 +832,9 @@ fun PlaybackScreen(
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .background(Color(0xFF0B0B0E))
+                    // 同顶栏：半透明黑叠加 + 吃掉点击（否则点进度行两端的空隙会把控制栏关掉）
+                    .background(Color(0xCC0B0B0E))
+                    .pointerInput(Unit) { detectTapGestures { } }
                     .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 // 行 1：进度条独占一行 2:14 ——●—— 5:29

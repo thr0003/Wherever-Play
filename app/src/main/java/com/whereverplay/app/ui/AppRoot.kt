@@ -145,6 +145,10 @@ fun AppRoot() {
             // 0.2.2：手动翻谱是「播放偏好」，跟时间字段一样不计入内容修改，
             // 否则在播放页点一下开关，这个项目就窜到「最近修改」第一位了
             manualTurn = prev.manualTurn,
+            // 2026-10-26（用户第 1 条）：收藏星标属于「整理」而不是「改内容」。
+            // 点一下星，项目不该窜到首页「最近修改」第一位 —— 单点星与长按多选批量收藏
+            // 都走这个出口，在这里排除一次即可全覆盖。
+            isFavorite = prev.isFavorite,
         ) != prev
         return if (changed) p.copy(updatedAt = System.currentTimeMillis()) else p
     }
